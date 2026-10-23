@@ -1,0 +1,12 @@
+services:
+  dashboard:
+    build: ./dashboard
+    image: ppe-dashboard
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data
+    environment:
+      DATA_DIR: /data
+      INGEST_TOKEN: ""        # doluysa dedektörde de aynı INGEST_TOKEN verilmeli
+    restart: unless-stopped

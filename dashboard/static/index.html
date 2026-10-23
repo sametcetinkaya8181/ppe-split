@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Saha KKD İzleme</title>
+<style>
+  :root {
+    --concrete: #d9dcde;
+    --panel: #f6f7f7;
+    --ink: #17202a;
+    --ink-soft: #566170;
+    --line: #b9bec3;
+    --hivis: #dff04a;
+    --ok: #1d8a4e;
+    --bad: #cf2e24;
+    --warn: #b9740c;
+    --font: Bahnschrift, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --concrete: #1d2226; --panel: #262c31; --ink: #e8ebee; --ink-soft: #9aa5b1;
+      --line: #3b444c; --ok: #4cc27f; --bad: #ff6b5e; --warn: #e3a447;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--concrete); color: var(--ink); font-family: var(--font); }
+  body { min-height: 100vh; }
+
+  header {
+    background: var(--hivis); color: #17202a; padding: 10px 20px;
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    border-bottom: 4px solid #17202a;
+  }
+  header h1 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: .2px; }
+  #conn { font-size: 14px; display: flex; align-items: center; gap: 8px; }
+  #conn i { width: 10px; height: 10px; border-radius: 50%; background: #17202a; display: inline-block; }
+  #conn.live i { background: var(--ok); }
+  #conn.err i { background: var(--bad); }
+
+  main {
+    display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 16px;
+    padding: 16px 20px; max-width: 1600px; margin: 0 auto;
+  }
+  @media (max-width: 1000px) { main { grid-template-columns: 1fr; } }
+
+  .stage { background: #000; position: relative; border: 3px solid transparent; transition: border-color .2s; }
+  .stage.alarm { border-color: var(--bad); }
+  .stage img { display: block; width: 100%; height: auto; min-height: 240px; background: #0c0f12; }
+  .stage .tag {
+    position: absolute; left: 0; top: 0; background: rgba(23,32,42,.85); color: #fff;
+    font-size: 13px; padding: 4px 10px; font-variant-numeric: tabular-nums;
+  }
+
+  .tally { display: flex; flex-wrap: wrap; gap: 0; margin-top: 12px; background: var(--panel); border: 1px solid var(--line); }
+  .tally div { flex: 1 1 120px; padding: 10px 14px; border-right: 1px solid var(--line); }
+  .tally div:last-child { border-right: 0; }
+  .tally b { display: block; font-size: 30px; line-height: 1.1; font-variant-numeric: tabular-nums; }
+  .tally span { font-size: 13px; color: var(--ink-soft); }
+  .tally .v b { color: var(--bad); }
+  .tally .o b { color: var(--ok); }
+
+  h2 { font-size: 15px; margin: 0; padding: 10px 14px; border-bottom: 1px solid var(--line); font-weight: 700; }
+  .box { background: var(--panel); border: 1px solid var(--line); margin-top: 12px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 7px 14px; border-bottom: 1px solid var(--line); }
+  th { color: var(--ink-soft); font-weight: 500; font-size: 13px; }
+  tr:last-child td { border-bottom: 0; }
+  .pill { padding: 1px 8px; font-size: 12px; font-weight: 700; color: #fff; }
+  .pill.UYGUN { background: var(--ok); } .pill.IHLAL { background: var(--bad); } .pill.ANALIZ { background: #6b7580; }
+  .empty { padding: 18px 14px; color: var(--ink-soft); font-size: 14px; }
+
+  aside { min-width: 0; }
+  #feed { max-height: calc(100vh - 150px); overflow-y: auto; margin: 0; padding: 0; list-style: none; }
+  #feed li { display: grid; grid-template-columns: 64px 1fr; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); border-left: 5px solid var(--bad); }
+  #feed li.end { border-left-color: var(--ok); }
+  #feed li.new { animation: flash 1.6s ease-out; }
+  @keyframes flash { from { background: color-mix(in srgb, var(--bad) 25%, transparent); } to { background: transparent; } }
+  #feed img { width: 64px; height: 84px; object-fit: cover; background: #0c0f12; cursor: zoom-in; }
+  #feed .ph { width: 64px; height: 84px; background: var(--line); }
+  #feed strong { font-size: 15px; display: block; }
+  #feed small { color: var(--ink-soft); font-size: 12.5px; display: block; margin-top: 2px; }
+  #feed .live-line { color: var(--warn); }
+  button { font: inherit; font-size: 13px; padding: 5px 10px; background: transparent; color: var(--ink); border: 1px solid var(--ink); cursor: pointer; }
+  button:hover { background: var(--hivis); color: #17202a; }
+  button:focus-visible, img:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+  .head { display: flex; justify-content: space-between; align-items: center; padding-right: 10px; border-bottom: 1px solid var(--line); }
+  .head h2 { border: 0; }
+
+  dialog { border: 0; padding: 0; background: #000; max-width: 90vw; }
+  dialog img { display: block; max-width: 90vw; max-height: 85vh; }
+  dialog::backdrop { background: rgba(0,0,0,.7); }
+  @media (prefers-reduced-motion: reduce) { #feed li.new { animation: none; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Saha KKD İzleme: baret ve yelek</h1>
+  <div id="conn"><i></i><span id="connText">Bağlanıyor…</span></div>
+</header>
+
+<main>
+  <section>
+    <div class="stage" id="stage">
+      <img id="video" src="/video_feed" alt="Etiketlenmiş canlı video">
+      <div class="tag" id="tag">–</div>
+    </div>
+
+    <div class="tally" aria-live="polite">
+      <div><b id="nPeople">0</b><span>Kadrajdaki kişi</span></div>
+      <div class="o"><b id="nOk">0</b><span>Uygun</span></div>
+      <div class="v"><b id="nViol">0</b><span>İhlal</span></div>
+      <div><b id="nAna">0</b><span>Analiz ediliyor</span></div>
+      <div><b id="nTotal">0</b><span>Toplam ihlal uyarısı</span></div>
+    </div>
+
+    <div class="box">
+      <h2>Şu an görünen kişiler</h2>
+      <div id="peopleWrap"></div>
+    </div>
+
+    <div class="box">
+      <div class="head"><h2>Video özeti (kişi bazlı)</h2><button id="loadReport">Raporu yükle</button></div>
+      <div id="reportWrap"><div class="empty">Dedektör videoyu bir tur bitirince rapor oluşur.</div></div>
+    </div>
+  </section>
+
+  <aside>
+    <div class="box" style="margin-top:0">
+      <div class="head"><h2>Uyarılar</h2><button id="clear">Listeyi temizle</button></div>
+      <ul id="feed"></ul>
+      <div class="empty" id="feedEmpty">Henüz ihlal yok. Bir kişi baret veya yeleksiz görülürse burada listelenir.</div>
+    </div>
+  </aside>
+</main>
+
+<dialog id="dlg"><img id="dlgImg" alt="İhlal anı"></dialog>
+
+<script>
+const $ = id => document.getElementById(id);
+let after = 0, total = 0, fails = 0, wasDown = false;
+const openAlerts = new Map();   // pid -> <li> (süren ihlal)
+
+function fmtT(s) { const m = Math.floor(s / 60); return `${m}:${(s % 60).toFixed(0).padStart(2, "0")}`; }
+
+function addAlert(a, animate) {
+  const feed = $("feed");
+  if (a.type === "ongoing") {
+    const li = openAlerts.get(a.pid);
+    if (li) li.querySelector(".live-line").textContent =
+      `Sürüyor · video ${fmtT(a.t)} · baret %${a.helmet_rate}, yelek %${a.vest_rate}`;
+    return;
+  }
+  const li = document.createElement("li");
+  if (a.type === "end") li.className = "end";
+  if (animate) li.classList.add("new");
+  const thumb = a.snapshot
+    ? Object.assign(document.createElement("img"), { src: a.snapshot, alt: `ID ${a.pid} ihlal anı`, tabIndex: 0 })
+    : Object.assign(document.createElement("div"), { className: "ph" });
+  if (a.snapshot) {
+    const open = () => { $("dlgImg").src = a.snapshot; $("dlg").showModal(); };
+    thumb.onclick = open; thumb.onkeydown = e => { if (e.key === "Enter") open(); };
+  }
+  const body = document.createElement("div");
+  const title = document.createElement("strong");
+  const sub = document.createElement("small");
+  const live = document.createElement("small");
+  live.className = "live-line";
+  if (a.type === "start") {
+    title.textContent = `ID ${a.pid}: ${a.missing}`;
+    sub.textContent = `${a.wall} · video ${fmtT(a.t)} · baret %${a.helmet_rate}, yelek %${a.vest_rate}`;
+    openAlerts.set(a.pid, li); total++;
+    $("nTotal").textContent = total;
+  } else {
+    title.textContent = `ID ${a.pid}: ihlal bitti`;
+    sub.textContent = `${a.wall} · video ${fmtT(a.t)} · ekipman tekrar görüldü`;
+    openAlerts.delete(a.pid);
+  }
+  body.append(title, sub, live);
+  li.append(thumb, body);
+  feed.prepend(li);
+  $("feedEmpty").style.display = "none";
+}
+
+function renderPeople(people) {
+  const w = $("peopleWrap");
+  if (!people.length) { w.innerHTML = '<div class="empty">Şu an kadrajda kimse yok.</div>'; return; }
+  const rows = people.map(p =>
+    `<tr><td>ID ${p.pid}</td><td><span class="pill ${p.status}">${{UYGUN:"Uygun",IHLAL:"İhlal",ANALIZ:"Analiz"}[p.status]}</span></td>` +
+    `<td>%${p.helmet}</td><td>%${p.vest}</td></tr>`).join("");
+  w.innerHTML = `<table><thead><tr><th>Kişi</th><th>Durum</th><th>Baret görülme</th><th>Yelek görülme</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+async function tick() {
+  try {
+    const r = await fetch(`/api/state?after=${after}`);
+    const d = await r.json();
+    fails = 0;
+    const s = d.summary, m = d.meta;
+    $("nPeople").textContent = s.people; $("nOk").textContent = s.ok;
+    $("nViol").textContent = s.viol; $("nAna").textContent = s.analyzing;
+    $("stage").classList.toggle("alarm", s.viol > 0);
+    const waiting = m.status === "waiting_for_detector";
+    $("tag").textContent = waiting ? "Dedektör bekleniyor…"
+      : `video ${fmtT(s.t)} · ${m.width}×${m.height} · işleme ${m.proc_fps} kare/sn`;
+    const c = $("conn");
+    c.className = m.status === "running" ? "live" : (m.status === "error" || waiting ? "err" : "");
+    $("connText").textContent = { running: "Canlı", starting: "Model yükleniyor…", finished: "Video bitti",
+      waiting_for_detector: "Dedektör bağlı değil (PC'de detector.py çalıştır)", error: "Hata: " + m.error }[m.status] || m.status;
+    // dedektör geri geldiyse / dashboard yeniden başladıysa video akışını yenile
+    if (wasDown && !waiting) { $("video").src = "/video_feed?r=" + Date.now(); }
+    wasDown = waiting;
+    // dashboard konteyneri yeniden başladıysa uyarı sayacı sıfırlanır: listeyi de sıfırla
+    if (d.last_alert_id < after) { after = 0; total = 0; $("nTotal").textContent = 0; $("clear").onclick(); }
+    renderPeople(d.people);
+    d.alerts.forEach(a => addAlert(a, after !== 0));
+    after = d.last_alert_id;
+  } catch (e) {
+    if (++fails > 2) { $("conn").className = "err"; $("connText").textContent = "Dashboard sunucusuna ulaşılamıyor"; wasDown = true; }
+  }
+}
+
+$("clear").onclick = () => { $("feed").innerHTML = ""; $("feedEmpty").style.display = ""; openAlerts.clear(); };
+$("dlg").onclick = () => $("dlg").close();
+$("loadReport").onclick = async () => {
+  const rep = await (await fetch("/api/report")).json();
+  const w = $("reportWrap");
+  if (!rep.length) { w.innerHTML = '<div class="empty">Rapor henüz hazır değil; video bir tur tamamlanınca oluşur.</div>'; return; }
+  w.innerHTML = '<table><thead><tr><th>Kişi</th><th>Aralık</th><th>Gözlem</th><th>Baret</th><th>Yelek</th><th>Sonuç</th></tr></thead><tbody>' +
+    rep.map(p => `<tr><td>ID ${p.pid}</td><td>${p.first}–${p.last} sn</td><td>${p.n}</td><td>%${p.helmet}</td><td>%${p.vest}</td>` +
+      `<td><span class="pill ${p.violation ? "IHLAL" : "UYGUN"}">${p.violation ? "İhlal yaşandı" : "Uygun"}</span></td></tr>`).join("") + "</tbody></table>";
+};
+
+tick(); setInterval(tick, 700);
+</script>
+</body>
+</html>
