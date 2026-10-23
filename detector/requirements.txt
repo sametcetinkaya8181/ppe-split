@@ -2,3 +2,4 @@ ultralytics==8.4.183
 opencv-python==4.10.0.84
 requests>=2.31
 lap>=0.5.12
+yt-dlp

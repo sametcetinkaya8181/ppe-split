@@ -40,17 +40,28 @@
 
   main {
     display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 16px;
-    padding: 16px 20px; max-width: 1600px; margin: 0 auto;
+    padding: 16px 20px; max-width: 1800px; margin: 0 auto;
   }
   @media (max-width: 1000px) { main { grid-template-columns: 1fr; } }
 
-  .stage { background: #000; position: relative; border: 3px solid transparent; transition: border-color .2s; }
+  /* kamera ızgarası */
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 12px; }
+  .hint { font-size: 12.5px; color: var(--ink-soft); margin: 0 0 8px; }
+  .stage { background: #000; position: relative; border: 3px solid transparent; transition: border-color .2s; cursor: pointer; }
+  .stage.wide { grid-column: 1 / -1; }
   .stage.alarm { border-color: var(--bad); }
-  .stage img { display: block; width: 100%; height: auto; min-height: 240px; background: #0c0f12; }
+  .stage img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: #0c0f12; }
+  .stage.wide img { max-height: 78vh; }
+  .stage.off img { opacity: .35; }
   .stage .tag {
     position: absolute; left: 0; top: 0; background: rgba(23,32,42,.85); color: #fff;
-    font-size: 13px; padding: 4px 10px; font-variant-numeric: tabular-nums;
+    font-size: 13px; padding: 4px 10px; font-variant-numeric: tabular-nums; max-width: 100%;
   }
+  .stage .badge {
+    position: absolute; right: 0; bottom: 0; background: var(--bad); color: #fff;
+    font-size: 13px; font-weight: 700; padding: 4px 10px;
+  }
+  .stage .badge:empty { display: none; }
 
   .tally { display: flex; flex-wrap: wrap; gap: 0; margin-top: 12px; background: var(--panel); border: 1px solid var(--line); }
   .tally div { flex: 1 1 120px; padding: 10px 14px; border-right: 1px solid var(--line); }
@@ -70,6 +81,7 @@
   .pill { padding: 1px 8px; font-size: 12px; font-weight: 700; color: #fff; }
   .pill.UYGUN { background: var(--ok); } .pill.IHLAL { background: var(--bad); } .pill.ANALIZ { background: #6b7580; }
   .empty { padding: 18px 14px; color: var(--ink-soft); font-size: 14px; }
+  .scroll { max-height: 320px; overflow-y: auto; }
 
   aside { min-width: 0; }
   #feed { max-height: calc(100vh - 150px); overflow-y: auto; margin: 0; padding: 0; list-style: none; }
@@ -102,12 +114,13 @@
 
 <main>
   <section>
-    <div class="stage" id="stage">
-      <img id="video" src="/video_feed" alt="Etiketlenmiş canlı video">
-      <div class="tag" id="tag">–</div>
+    <p class="hint">Bir kameraya tıklayınca tam genişliğe büyür, tekrar tıklayınca küçülür.</p>
+    <div class="grid" id="grid">
+      <div class="empty" id="gridEmpty">Dedektör bağlanınca kameralar burada görünür.</div>
     </div>
 
     <div class="tally" aria-live="polite">
+      <div><b id="nCams">0</b><span>Kamera</span></div>
       <div><b id="nPeople">0</b><span>Kadrajdaki kişi</span></div>
       <div class="o"><b id="nOk">0</b><span>Uygun</span></div>
       <div class="v"><b id="nViol">0</b><span>İhlal</span></div>
@@ -117,12 +130,12 @@
 
     <div class="box">
       <h2>Şu an görünen kişiler</h2>
-      <div id="peopleWrap"></div>
+      <div id="peopleWrap" class="scroll"></div>
     </div>
 
     <div class="box">
-      <div class="head"><h2>Video özeti (kişi bazlı)</h2><button id="loadReport">Raporu yükle</button></div>
-      <div id="reportWrap"><div class="empty">Dedektör videoyu bir tur bitirince rapor oluşur.</div></div>
+      <div class="head"><h2>Video özeti (kamera ve kişi bazlı)</h2><button id="loadReport">Raporu yükle</button></div>
+      <div id="reportWrap" class="scroll"><div class="empty">Dedektör bir videoyu bitirince rapor oluşur.</div></div>
     </div>
   </section>
 
@@ -139,15 +152,64 @@
 
 <script>
 const $ = id => document.getElementById(id);
-let after = 0, total = 0, fails = 0, wasDown = false;
-const openAlerts = new Map();   // pid -> <li> (süren ihlal)
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+let after = 0, total = 0, fails = 0;
+const openAlerts = new Map();   // "cam:pid" -> <li> (süren ihlal)
+const tiles = new Map();        // cam id -> tile
+const byIdx = new Map();        // WebSocket indeksi -> tile
 
 function fmtT(s) { const m = Math.floor(s / 60); return `${m}:${(s % 60).toFixed(0).padStart(2, "0")}`; }
 
+/* ---------- kamera karoları ---------- */
+function ensureTile(c) {
+  let t = tiles.get(c.id);
+  if (t) return t;
+  $("gridEmpty").style.display = "none";
+  const el = document.createElement("div");
+  el.className = "stage";
+  const img = document.createElement("img");
+  img.alt = `${c.name} canlı video`;
+  const tag = document.createElement("div"); tag.className = "tag";
+  const badge = document.createElement("div"); badge.className = "badge";
+  el.append(img, tag, badge);
+  el.onclick = () => el.classList.toggle("wide");
+  $("grid").append(el);
+  t = { el, img, tag, badge, url: null };
+  tiles.set(c.id, t); byIdx.set(c.idx, t);
+  return t;
+}
+
+function syncCam(c) {
+  const t = ensureTile(c), m = c.meta, s = c.summary;
+  const waiting = m.status === "waiting_for_detector";
+  t.tag.textContent = waiting ? `${c.name} · bekleniyor…`
+    : `${c.name} · video ${fmtT(s.t)} · ${m.width}×${m.height} · ${m.proc_fps} kare/sn`;
+  t.el.classList.toggle("alarm", s.viol > 0);
+  t.el.classList.toggle("off", waiting);
+  t.badge.textContent = s.viol > 0 ? `${s.viol} İHLAL` : "";
+}
+
+/* ---------- tek WebSocket ile tüm kareler ---------- */
+function connectWS() {
+  const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
+  ws.binaryType = "arraybuffer";
+  ws.onmessage = e => {
+    const u8 = new Uint8Array(e.data);
+    const t = byIdx.get(u8[0]);
+    if (!t) return;
+    const url = URL.createObjectURL(new Blob([u8.subarray(1)], { type: "image/jpeg" }));
+    const old = t.url;
+    t.img.src = url; t.url = url;
+    if (old) setTimeout(() => URL.revokeObjectURL(old), 1000);
+  };
+  ws.onclose = () => setTimeout(connectWS, 1000);
+}
+
+/* ---------- uyarılar ---------- */
 function addAlert(a, animate) {
-  const feed = $("feed");
+  const feed = $("feed"), key = `${a.cam}:${a.pid}`;
   if (a.type === "ongoing") {
-    const li = openAlerts.get(a.pid);
+    const li = openAlerts.get(key);
     if (li) li.querySelector(".live-line").textContent =
       `Sürüyor · video ${fmtT(a.t)} · baret %${a.helmet_rate}, yelek %${a.vest_rate}`;
     return;
@@ -156,7 +218,7 @@ function addAlert(a, animate) {
   if (a.type === "end") li.className = "end";
   if (animate) li.classList.add("new");
   const thumb = a.snapshot
-    ? Object.assign(document.createElement("img"), { src: a.snapshot, alt: `ID ${a.pid} ihlal anı`, tabIndex: 0 })
+    ? Object.assign(document.createElement("img"), { src: a.snapshot, alt: `${a.cam_name} ID ${a.pid} ihlal anı`, tabIndex: 0 })
     : Object.assign(document.createElement("div"), { className: "ph" });
   if (a.snapshot) {
     const open = () => { $("dlgImg").src = a.snapshot; $("dlg").showModal(); };
@@ -168,14 +230,14 @@ function addAlert(a, animate) {
   const live = document.createElement("small");
   live.className = "live-line";
   if (a.type === "start") {
-    title.textContent = `ID ${a.pid}: ${a.missing}`;
+    title.textContent = `${a.cam_name} · ID ${a.pid}: ${a.missing}`;
     sub.textContent = `${a.wall} · video ${fmtT(a.t)} · baret %${a.helmet_rate}, yelek %${a.vest_rate}`;
-    openAlerts.set(a.pid, li); total++;
+    openAlerts.set(key, li); total++;
     $("nTotal").textContent = total;
   } else {
-    title.textContent = `ID ${a.pid}: ihlal bitti`;
+    title.textContent = `${a.cam_name} · ID ${a.pid}: ihlal bitti`;
     sub.textContent = `${a.wall} · video ${fmtT(a.t)} · ekipman tekrar görüldü`;
-    openAlerts.delete(a.pid);
+    openAlerts.delete(key);
   }
   body.append(title, sub, live);
   li.append(thumb, body);
@@ -183,55 +245,63 @@ function addAlert(a, animate) {
   $("feedEmpty").style.display = "none";
 }
 
-function renderPeople(people) {
+function clearFeed() { $("feed").innerHTML = ""; $("feedEmpty").style.display = ""; openAlerts.clear(); }
+
+function renderPeople(cams) {
   const w = $("peopleWrap");
-  if (!people.length) { w.innerHTML = '<div class="empty">Şu an kadrajda kimse yok.</div>'; return; }
-  const rows = people.map(p =>
-    `<tr><td>ID ${p.pid}</td><td><span class="pill ${p.status}">${{UYGUN:"Uygun",IHLAL:"İhlal",ANALIZ:"Analiz"}[p.status]}</span></td>` +
-    `<td>%${p.helmet}</td><td>%${p.vest}</td></tr>`).join("");
-  w.innerHTML = `<table><thead><tr><th>Kişi</th><th>Durum</th><th>Baret görülme</th><th>Yelek görülme</th></tr></thead><tbody>${rows}</tbody></table>`;
+  const rows = cams.flatMap(c => c.people.map(p =>
+    `<tr><td>${esc(c.name)}</td><td>ID ${p.pid}</td>` +
+    `<td><span class="pill ${p.status}">${{ UYGUN: "Uygun", IHLAL: "İhlal", ANALIZ: "Analiz" }[p.status]}</span></td>` +
+    `<td>%${p.helmet}</td><td>%${p.vest}</td></tr>`)).join("");
+  w.innerHTML = rows
+    ? `<table><thead><tr><th>Kamera</th><th>Kişi</th><th>Durum</th><th>Baret görülme</th><th>Yelek görülme</th></tr></thead><tbody>${rows}</tbody></table>`
+    : '<div class="empty">Şu an hiçbir kadrajda kimse yok.</div>';
 }
 
+/* ---------- durum döngüsü ---------- */
 async function tick() {
   try {
-    const r = await fetch(`/api/state?after=${after}`);
-    const d = await r.json();
+    const d = await (await fetch(`/api/state?after=${after}`)).json();
     fails = 0;
-    const s = d.summary, m = d.meta;
-    $("nPeople").textContent = s.people; $("nOk").textContent = s.ok;
-    $("nViol").textContent = s.viol; $("nAna").textContent = s.analyzing;
-    $("stage").classList.toggle("alarm", s.viol > 0);
-    const waiting = m.status === "waiting_for_detector";
-    $("tag").textContent = waiting ? "Dedektör bekleniyor…"
-      : `video ${fmtT(s.t)} · ${m.width}×${m.height} · işleme ${m.proc_fps} kare/sn`;
+    d.cameras.forEach(syncCam);
+    const t = d.totals;
+    $("nCams").textContent = d.cameras.length;
+    $("nPeople").textContent = t.people; $("nOk").textContent = t.ok;
+    $("nViol").textContent = t.viol; $("nAna").textContent = t.analyzing;
+
+    const running = d.cameras.filter(c => c.meta.status === "running").length;
     const c = $("conn");
-    c.className = m.status === "running" ? "live" : (m.status === "error" || waiting ? "err" : "");
-    $("connText").textContent = { running: "Canlı", starting: "Model yükleniyor…", finished: "Video bitti",
-      waiting_for_detector: "Dedektör bağlı değil (PC'de detector.py çalıştır)", error: "Hata: " + m.error }[m.status] || m.status;
-    // dedektör geri geldiyse / dashboard yeniden başladıysa video akışını yenile
-    if (wasDown && !waiting) { $("video").src = "/video_feed?r=" + Date.now(); }
-    wasDown = waiting;
-    // dashboard konteyneri yeniden başladıysa uyarı sayacı sıfırlanır: listeyi de sıfırla
-    if (d.last_alert_id < after) { after = 0; total = 0; $("nTotal").textContent = 0; $("clear").onclick(); }
-    renderPeople(d.people);
+    let cls = "", txt;
+    if (!d.cameras.length) { txt = "Dedektör bağlı değil (PC'de detector.py çalıştır)"; cls = "err"; }
+    else if (running) { txt = `Canlı · ${running}/${d.cameras.length} kamera`; cls = "live"; }
+    else if (d.cameras.every(x => x.meta.status === "finished")) { txt = "Videolar bitti"; }
+    else if (d.cameras.some(x => x.meta.status === "error")) { txt = "Hata: " + d.cameras.find(x => x.meta.status === "error").meta.error; cls = "err"; }
+    else { txt = "Dedektör bekleniyor…"; cls = "err"; }
+    c.className = cls; $("connText").textContent = txt;
+
+    renderPeople(d.cameras);
+
+    // dashboard yeniden başladıysa uyarı sayacı sıfırlanır
+    if (d.last_alert_id < after) { after = 0; total = 0; $("nTotal").textContent = 0; clearFeed(); }
     d.alerts.forEach(a => addAlert(a, after !== 0));
     after = d.last_alert_id;
   } catch (e) {
-    if (++fails > 2) { $("conn").className = "err"; $("connText").textContent = "Dashboard sunucusuna ulaşılamıyor"; wasDown = true; }
+    if (++fails > 2) { $("conn").className = "err"; $("connText").textContent = "Dashboard sunucusuna ulaşılamıyor"; }
   }
 }
 
-$("clear").onclick = () => { $("feed").innerHTML = ""; $("feedEmpty").style.display = ""; openAlerts.clear(); };
+$("clear").onclick = clearFeed;
 $("dlg").onclick = () => $("dlg").close();
 $("loadReport").onclick = async () => {
   const rep = await (await fetch("/api/report")).json();
   const w = $("reportWrap");
-  if (!rep.length) { w.innerHTML = '<div class="empty">Rapor henüz hazır değil; video bir tur tamamlanınca oluşur.</div>'; return; }
-  w.innerHTML = '<table><thead><tr><th>Kişi</th><th>Aralık</th><th>Gözlem</th><th>Baret</th><th>Yelek</th><th>Sonuç</th></tr></thead><tbody>' +
-    rep.map(p => `<tr><td>ID ${p.pid}</td><td>${p.first}–${p.last} sn</td><td>${p.n}</td><td>%${p.helmet}</td><td>%${p.vest}</td>` +
+  if (!rep.length) { w.innerHTML = '<div class="empty">Rapor henüz hazır değil; dedektör bir videoyu bitirince oluşur.</div>'; return; }
+  w.innerHTML = '<table><thead><tr><th>Kamera</th><th>Kişi</th><th>Aralık</th><th>Gözlem</th><th>Baret</th><th>Yelek</th><th>Sonuç</th></tr></thead><tbody>' +
+    rep.map(p => `<tr><td>${esc(p.cam_name)}</td><td>ID ${p.pid}</td><td>${p.first}–${p.last} sn</td><td>${p.n}</td><td>%${p.helmet}</td><td>%${p.vest}</td>` +
       `<td><span class="pill ${p.violation ? "IHLAL" : "UYGUN"}">${p.violation ? "İhlal yaşandı" : "Uygun"}</span></td></tr>`).join("") + "</tbody></table>";
 };
 
+connectWS();
 tick(); setInterval(tick, 700);
 </script>
 </body>
