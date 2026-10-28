@@ -7,6 +7,7 @@ COPY alembic.ini .
 COPY alembic ./alembic
 COPY db ./db
 COPY ingest ./ingest
+COPY maintenance ./maintenance
 COPY app.py .
 COPY static ./static
 EXPOSE 8000

@@ -258,7 +258,7 @@ def test_incident_detail_timeline_camera_run(api):
     assert [e["event_id"] for e in d["timeline"]] == [e["event_id"] for e in evs]
     assert d["timeline"][0]["snapshot"] == f"/snapshots/alert_{evs[0]['event_id']}.jpg"
     assert d["timeline"][1]["snapshot"] is None and d["timeline"][2]["missing"] == ""
-    assert d["camera"] == {"id": "cam1", "name": "Kamera cam1"}
+    assert d["camera"] == {"id": "cam1", "name": "Kamera cam1", "current_name": "Kamera cam1"}
     assert d["run"]["id"] == str(run) and d["run"]["status"] == "running" and d["run"]["loop_no"] == 1
     assert d["status"] == "closed" and d["unclosed"] is None and d["timeline_truncated"] is False
 
@@ -322,6 +322,7 @@ def test_cameras_and_runs(api, engine):
                   orphan_events=1, error="koptu rtsp://admin:S3cr3t@10.0.0.5/s")
     assert api.post("/ingest/report", json=body).status_code == 200
     send(api, [], r2)                                               # yalnızca heartbeat: canlı run
+    app_module.flush_heartbeats()
     start(api, r3, cam="cam2", at=T0 - timedelta(days=1))
     sql(engine, "UPDATE detector_runs SET started_at = :t WHERE id = :r", t=T0 - timedelta(days=1), r=r3)
     sql(engine, "UPDATE detector_runs SET last_seen_at = now() - interval '1 hour' WHERE id = :r", r=r3)

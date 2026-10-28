@@ -22,16 +22,22 @@ ppe-split/
 ## A) İLK KURULUM (yalnızca bir kez)
 
 ### 1. Dashboard'u ve veritabanını başlat
-Proje klasöründe (`docker-compose.yml`'in olduğu yer) önce `.env` oluştur ve `POSTGRES_PASSWORD` değerini güçlü bir parolayla değiştir (`.env` Git'e eklenmez):
+Proje klasöründe (`docker-compose.yml`'in olduğu yer) önce `.env` oluştur; `POSTGRES_PASSWORD`, `PPE_APP_PASSWORD`, `PPE_MIGRATOR_PASSWORD` ve `INGEST_TOKEN` değerlerini üret (`python -c "import secrets; print(secrets.token_urlsafe(32))"`). `.env` Git'e eklenmez. Aynı `INGEST_TOKEN`'ı `detector/.env` içine de yaz.
 
     Copy-Item .env.example .env        # Mac/Linux: cp .env.example .env
     docker compose up -d --build
 
-Bu komut PostgreSQL 17'yi (`db`) başlatır, şemayı Alembic ile kurar (`migrate`, tek seferlik) ve ardından dashboard'u açar. Kontrol: `docker compose ps` ve http://127.0.0.1:8000/health/ready (`"status":"ready"`).
+Bu komut PostgreSQL 17'yi (`db`) başlatır, veritabanı rollerini ayırır (`db-roles`: tablolar `ppe_migrator`'a ait, dashboard yalnız SELECT/INSERT/UPDATE yetkili `ppe_app` ile bağlanır), şemayı Alembic ile kurar (`migrate`) ve ardından dashboard'u açar. Kontrol: `docker compose ps` ve http://127.0.0.1:8000/health/ready (`"status":"ready"`).
 
 Tarayıcıda http://localhost:8000 aç. Bu aşamada "Dedektör bağlı değil" yazması normaldir. Dashboard varsayılan olarak yalnızca bu bilgisayardan erişilir; PostgreSQL portu dışarı açılmaz.
 
 Testler (gerçek PostgreSQL, ayrı `ppe_test` veritabanı): `docker compose --profile test run --rm tests`
+
+**Belgeler:** [Mimari](docs/ARCHITECTURE.md) · [Veritabanı ve roller](docs/DATABASE.md) · [Güvenlik](docs/SECURITY.md) · [Yedekleme/geri yükleme](docs/BACKUP_RESTORE.md) · [Kurulum/işletim](docs/DEPLOYMENT.md) · [Test raporu](docs/TEST_REPORT.md)
+
+**Kamera kimliği:** Her kaynağa sabit bir kimlik verin: `VIDEO_SOURCES=[giris]Giriş kapısı=rtsp://...,[kule]videos/kule.mp4`. Kimlik kaynak sırası değişse de aynı kalır. Önek yoksa eski davranış (`cam1`, `cam2`… sıraya bağlı) kullanılır ve dedektör açılışta uyarır; `CAMERA_ID_MODE=source` ile kimlik kaynaktan türetilir. Geçmiş kayıtlar run'ın kendi kaynak etiketiyle gösterilir; FAZ 5 öncesi kayıtlar "Eski kayıt: kaynak doğrulanamadı" olarak görünür.
+
+**Yedek:** `python scripts/backup.py --quiesce` (PostgreSQL + snapshot'lar → `backups/`), doğrulama: `python scripts/restore_check.py backups\ppe-<zaman>` (izole veritabanına yükler, ana DB'ye dokunmaz).
 
 **Kalıcı kayıt:** İhlal olayları (`violation_events`), ihlal yaşam döngüleri (`incidents`), çalışmalar (`detector_runs`) ve kişi raporları (`person_run_reports`) PostgreSQL'e yazılır; snapshot JPEG'leri `data/snapshots/alert_<event_id>.jpg` dosyasındadır (DB'de yalnızca göreli yol). Dashboard yalnızca kayıt başarıyla commit edildikten sonra `200` döner; DB erişilemezse olaylı istekler `503` alır ve dedektör aynı olay kimlikleriyle tekrar dener. Canlı görüntü DB'den bağımsızdır. Kimliği olmayan (eski sürüm dedektör) olaylar `422` ile reddedilir.
 
@@ -145,6 +151,7 @@ Her seferinde yazmak istemezsen `detector/.env` oluştur (örnek: `.env.example`
 | `DEVICE` | otomatik | `mps`, `0` (NVIDIA) veya `cpu` |
 | `MODEL_PATH` | `models/best.pt` | Model dosyası |
 | `VIDEO_SOURCE` | `videos/video.mp4` | Dosya, `0` (webcam) veya RTSP adresi |
+| `CAMERA_ID_MODE` | `index` | Öneksiz kaynaklar için: `index` (cam1, cam2… sıraya bağlı) veya `source` (kaynaktan türetilir) |
 | `DASHBOARD_URL` | `http://localhost:8000` | Dashboard adresi |
 | `IMGSZ` | `960` | Düşürürsen hızlanır (`640`), doğruluk azalabilir |
 | `VID_STRIDE` | `1` | Her N. kareyi işle (`2` ≈ 2 kat hızlı) |

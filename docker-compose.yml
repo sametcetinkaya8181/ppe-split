@@ -19,16 +19,32 @@ services:
       start_period: 10s
     restart: unless-stopped
 
-  # Tek seferlik: şemayı Alembic ile head'e getirir, sonra çıkar.
-  migrate:
+  # Tek seferlik: rol ayrımı (least privilege). Süper kullanıcıyla çalışır; idempotenttir. Parolalar boşsa atlanır.
+  db-roles:
     build: ./dashboard
     image: ppe-dashboard
-    command: ["alembic", "upgrade", "head"]
+    command: ["python", "-m", "db.roles", "setup"]
     environment:
-      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL eksik - kökteki .env dosyasını kontrol edin}
+      ADMIN_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      PPE_APP_PASSWORD: ${PPE_APP_PASSWORD:-}
+      PPE_MIGRATOR_PASSWORD: ${PPE_MIGRATOR_PASSWORD:-}
     depends_on:
       db:
         condition: service_healthy
+    restart: "no"
+
+  # Tek seferlik: şemayı Alembic ile head'e getirir (tablo sahibi ppe_migrator), uygulama yetkilerini tazeler, çıkar.
+  migrate:
+    build: ./dashboard
+    image: ppe-dashboard
+    command: ["sh", "-c", "alembic upgrade head && python -m db.roles grants"]
+    environment:
+      DATABASE_URL: ${MIGRATE_DATABASE_URL:-${DATABASE_URL:?DATABASE_URL eksik - kökteki .env dosyasını kontrol edin}}
+    depends_on:
+      db:
+        condition: service_healthy
+      db-roles:
+        condition: service_completed_successfully
     restart: "no"
 
   dashboard:
@@ -40,8 +56,10 @@ services:
       - ./data:/data
     environment:
       DATA_DIR: /data
+      # Rol ayrımı kuruluysa ppe_app (SELECT/INSERT/UPDATE); eski kurulumda POSTGRES_USER.
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL eksik - kökteki .env dosyasını kontrol edin}
       INGEST_TOKEN: ${INGEST_TOKEN:-}     # doluysa dedektörde de aynı INGEST_TOKEN verilmeli
+      ACTIVE_WINDOW_SEC: ${ACTIVE_WINDOW_SEC:-90}
     depends_on:
       db:
         condition: service_healthy

@@ -9,6 +9,8 @@ from sqlalchemy import create_engine, inspect, text
 from db import Base
 from tests.conftest import alembic_cfg
 
+HEAD = "0003"                                   # güncel Alembic head
+
 TABLES = {"cameras", "detector_runs", "violation_events", "person_run_reports", "incidents"}
 
 
@@ -36,22 +38,22 @@ def test_server_is_postgres_17(engine):
 
 def test_single_head_and_upgrade_to_head(db_url):
     heads = ScriptDirectory.from_config(alembic_cfg()).get_heads()
-    assert heads == ["0002"]
-    assert _current(db_url) == {"0002"}
+    assert heads == [HEAD]
+    assert _current(db_url) == {HEAD}
     assert _tables(db_url) == TABLES
 
 
 def test_upgrade_head_is_repeatable(db_url):
     command.upgrade(alembic_cfg(), "head")
     command.upgrade(alembic_cfg(), "head")
-    assert _current(db_url) == {"0002"}
+    assert _current(db_url) == {HEAD}
 
 
 def test_downgrade_then_upgrade(db_url):
     command.downgrade(alembic_cfg(), "base")
     assert _tables(db_url) == set() and _current(db_url) == set()
     command.upgrade(alembic_cfg(), "head")
-    assert _tables(db_url) == TABLES and _current(db_url) == {"0002"}
+    assert _tables(db_url) == TABLES and _current(db_url) == {HEAD}
 
 
 def test_downgrade_refuses_when_data_exists(db_url, engine):
@@ -125,7 +127,7 @@ def test_0002_downgrade_refuses_to_drop_report_metadata(db_url, engine):
     try:
         with pytest.raises(RuntimeError, match="report_metadata"):
             command.downgrade(alembic_cfg(), "0001")
-        assert _current(db_url) == {"0002"}
+        assert _current(db_url) == {HEAD}
     finally:
         with engine.begin() as c:
             c.execute(text("TRUNCATE detector_runs, cameras CASCADE"))
@@ -144,7 +146,7 @@ def test_check_constraint_names_match_orm(engine):
     with engine.connect() as c:
         db = set(c.execute(text("SELECT conname FROM pg_constraint WHERE contype = 'c' "
                                 "AND conrelid::regclass::text = ANY(:t)"), {"t": list(TABLES)}).scalars())
-    assert db == orm and len(db) == 24
+    assert db == orm and len(db) == 26                  # 0003: +2 (detector_runs kaynak)
 
 
 def test_no_create_all_in_app_code():

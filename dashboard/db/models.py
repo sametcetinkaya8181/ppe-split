@@ -72,6 +72,8 @@ class DetectorRun(Base):
         Index("ix_detector_runs_camera_started", "camera_id", text("started_at DESC")),
         CheckConstraint("report_metadata IS NULL OR (jsonb_typeof(report_metadata) = 'object'"
                         " AND octet_length(report_metadata::text) <= 262144)", name="report_metadata_object"),
+        CheckConstraint("source_label IS NULL OR source_label <> ''", name="source_label_not_empty"),
+        CheckConstraint(f"source_kind IS NULL OR {_in('source_kind', SOURCE_KINDS)}", name="run_source_kind"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
@@ -86,6 +88,10 @@ class DetectorRun(Base):
     height: Mapped[int | None] = mapped_column(Integer)
     # Rapor özeti (allowlist): unclosed_incidents, unclosed_overflow, orphan_events, error, video_time_sec
     report_metadata: Mapped[dict | None] = mapped_column(JSONB)
+    # 0003: run'ın kendi kaynak bilgisi; ilk kayıtta yazılır, sonra değişmez. NULL = eski kayıt (doğrulanamadı).
+    source_label: Mapped[str | None] = mapped_column(String(120))
+    source_kind: Mapped[str | None] = mapped_column(String(20))
+    source_ref: Mapped[str | None] = mapped_column(String(300))
 
 
 class Incident(Base):

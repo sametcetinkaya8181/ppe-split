@@ -423,6 +423,7 @@ def test_finished_run_never_reopened(api, engine):
     assert post_frame(api, frame_payload([late], run_id=run)).status_code == 200     # geç gelen olay kabul
     app_module._HB.clear()
     assert post_frame(api, frame_payload([], run_id=run)).status_code == 200         # canlılık yazımı
+    app_module.flush_heartbeats()
     (r,) = rows(engine, "SELECT status, finished_at FROM detector_runs")
     assert r["status"] == "finished" and r["finished_at"] is not None
 
@@ -442,9 +443,11 @@ def test_eventless_frames_do_not_write_every_frame(api, engine, monkeypatch):
     monkeypatch.setattr(repo, "heartbeat", lambda s, **kw: (calls.append(kw), real(s, **kw)))
     for _ in range(20):
         assert post_frame(api, frame_payload([], run_id=run)).status_code == 200
+    app_module.flush_heartbeats()
     assert len(calls) == 1                                        # HEARTBEAT_SEC içinde tek yazım
     new_run = uuid.uuid4()
     assert post_frame(api, frame_payload([], run_id=new_run, loop=2)).status_code == 200
+    app_module.flush_heartbeats()
     assert len(calls) == 2                                        # run değişince hemen
     assert count(engine, "detector_runs") == 2 and count(engine, "violation_events") == 0
 

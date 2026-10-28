@@ -9,6 +9,7 @@ import re
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -162,32 +163,61 @@ def _meta_run(data: schemas.FramePayload, cam_id: str) -> dict:
 
     fps = m.get("fps")
     fps = round(fps, 2) if isinstance(fps, (int, float)) and not isinstance(fps, bool) and 0 < fps < 10_000 else None
+    kind = m.get("source_kind") if m.get("source_kind") in schemas.SOURCE_KINDS else None
     return {"run_id": run_id, "loop_no": pos_int(m.get("loop")), "fps": fps, "width": pos_int(m.get("width")),
-            "height": pos_int(m.get("height")),
-            "source_kind": m.get("source_kind") if m.get("source_kind") in schemas.SOURCE_KINDS else None,
-            "camera_id": cam_id}
+            "height": pos_int(m.get("height")), "source_kind": kind, "camera_id": cam_id,
+            "source_label": redact_text(data.name)[:120] if data.name and data.name.strip() else None,
+            "source_ref": _source_ref(m.get("source"), kind)}
+
+
+def _source_ref(source, kind) -> Optional[str]:
+    """Run'a yazılacak kimlik bilgisi içermeyen kaynak referansı: dosya için yalnızca dosya adı (kullanıcı
+    klasör yolu saklanmaz), URL için sunucu tarafında maskelenmiş adres."""
+    if not isinstance(source, str) or not source.strip() or source == "-":
+        return None
+    if kind == "file" or (kind is None and "://" not in source):
+        return redact_text(re.split(r"[\\/]", source.strip())[-1])[:300] or None
+    return redact_source(source)[:300]
 
 
 _HB: dict = {}                                    # cam_id -> (monotonic, run_id)
 _HB_LOCK = threading.Lock()
+_HB_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="heartbeat")
+_HB_PENDING: dict = {}                            # cam_id -> Future (kamera başına en fazla bir bekleyen yazım)
 
 
 def _heartbeat(cam: Cam, run: dict):
-    """Olaysız karelerde seyrek (HEARTBEAT_SEC veya run değişince) kamera/run canlılığı. Başarısızlık canlı
-    akışı etkilemez (best effort)."""
+    """Olaysız karelerde seyrek (HEARTBEAT_SEC veya run değişince) kamera/run canlılığı. Yazım ARKA PLANDA
+    yapılır: DB yavaş veya kapalıyken canlı kare isteği beklemez. Başarısızlık canlı akışı etkilemez (best effort);
+    olay taşıyan istekler ise hâlâ yalnızca commit sonrası 2xx alır."""
     now = time.monotonic()
     with _HB_LOCK:
         last = _HB.get(cam.id)
         if last and now - last[0] < HEARTBEAT_SEC and last[1] == run["run_id"]:
             return
+        pending = _HB_PENDING.get(cam.id)
+        if pending is not None and not pending.done():
+            return                                # önceki yazım hâlâ sürüyor (DB yavaş): yığılma yok
         _HB[cam.id] = (now, run["run_id"])
+        _HB_PENDING[cam.id] = _HB_POOL.submit(_write_heartbeat, cam.id, cam.name, run)
+
+
+def _write_heartbeat(cam_id: str, name: str, run: dict):
     try:
         with get_session() as s, s.begin():
-            repo.heartbeat(s, camera_id=cam.id, name=cam.name, source_kind=run["source_kind"],
+            repo.heartbeat(s, camera_id=cam_id, name=name, source_kind=run["source_kind"],
                            run_id=run["run_id"], loop_no=run["loop_no"], fps=run["fps"], width=run["width"],
-                           height=run["height"])
+                           height=run["height"], source_label=run["source_label"], source_ref=run["source_ref"])
     except (SQLAlchemyError, RuntimeError, repo.Conflict) as exc:
         _rlog("hb", f"UYARI: canlılık kaydı yazılamadı ({type(exc).__name__}); canlı akış etkilenmedi.")
+
+
+def flush_heartbeats(timeout: float = 10.0):
+    """Bekleyen arka plan canlılık yazımlarını bekler (testler ve kapanış için)."""
+    with _HB_LOCK:
+        pending = list(_HB_PENDING.values())
+    for f in pending:
+        f.result(timeout)
 
 
 def _persist_events(cam: Cam, data: schemas.FramePayload, raw_events: list) -> list:
@@ -243,7 +273,8 @@ def _persist_events(cam: Cam, data: schemas.FramePayload, raw_events: list) -> l
                                    meta_run["source_kind"] if cid == cam.id else None)
             for run_id in sorted(run_cams, key=str):
                 first = min(ev.occurred_at for ev, _ in uniq.values() if ev.run_id == run_id)
-                extra = ({k: meta_run[k] for k in ("loop_no", "fps", "width", "height")}
+                extra = ({k: meta_run[k] for k in ("loop_no", "fps", "width", "height", "source_label", "source_kind",
+                                                   "source_ref")}
                          if run_id == meta_run["run_id"] and run_cams[run_id] == cam.id else {})
                 repo.upsert_run(s, run_id, run_cams[run_id], started_at=first, **extra)
             repo.upsert_incidents(s, [{"id": ev.incident_id, "run_id": ev.run_id, "camera_id": ev.camera_id,
@@ -299,7 +330,9 @@ def _persist_report(rep: schemas.ReportIn):
             repo.upsert_camera(s, rep.camera_id, redact_text(rep.name) if rep.name else rep.camera_id, rep.source_kind)
             repo.complete_run(s, run_id=rep.run_id, camera_id=rep.camera_id, run_status=rep.run_status,
                               started_at=rep.started_at, finished_at=rep.finished_at, loop_no=rep.loop,
-                              metadata=meta, rows=rows)
+                              metadata=meta, rows=rows,
+                              source_label=redact_text(rep.name)[:120] if rep.name and rep.name.strip() else None,
+                              source_kind=rep.source_kind)
     except repo.Conflict as exc:
         _http_error(409, str(exc))
     except (SQLAlchemyError, RuntimeError) as exc:
@@ -506,8 +539,16 @@ def _report_summary(md: Optional[dict]) -> Optional[dict]:
             "error": redact_text(err)[:300] if err else None}
 
 
+def _source_out(r: dict) -> dict:
+    """camera_name: RUN'ın kendi (donmuş) kaynak etiketi; eski kayıtlarda None ve source_verified=False.
+    camera_current_name: kameranın bugünkü adı (geçmiş kayda ait olduğu iddia edilmez)."""
+    return {"camera_name": r["source_label"], "camera_current_name": r["camera_current_name"],
+            "source_verified": r["source_label"] is not None, "source_kind": r["source_kind"],
+            "source_ref": r["source_ref"]}
+
+
 def _incident_out(r: dict) -> dict:
-    return {"incident_id": str(r["incident_id"]), "camera_id": r["camera_id"], "camera_name": r["camera_name"],
+    return {"incident_id": str(r["incident_id"]), "camera_id": r["camera_id"], **_source_out(r),
             "run_id": str(r["run_id"]), "track_id": r["pid"],
             "status": r["status"], "status_reason": r["status_reason"], "verified": r["verified"],
             "started_at": _iso(r["started_at"]), "ended_at": _iso(r["ended_at"]),
@@ -523,7 +564,7 @@ def _incident_out(r: dict) -> dict:
 
 
 def _run_out(r: dict) -> dict:
-    return {"run_id": str(r["run_id"]), "camera_id": r["camera_id"], "camera_name": r["camera_name"],
+    return {"run_id": str(r["run_id"]), "camera_id": r["camera_id"], **_source_out(r),
             "loop_no": r["loop_no"], "status": r["status"], "liveness": r["liveness"],
             "started_at": _iso(r["started_at"]), "finished_at": _iso(r["finished_at"]),
             "last_seen_at": _iso(r["last_seen_at"]), "fps": _num(r["fps"]), "width": r["width"],
@@ -576,7 +617,7 @@ def history_incident(incident_id: uuid.UUID):
     unclosed = next((u for u in md.get("unclosed_incidents") or []
                      if isinstance(u, dict) and u.get("incident_id") == str(r["incident_id"])), None)
     return {**_incident_out(r),
-            "camera": {"id": r["camera_id"], "name": r["camera_name"]},
+            "camera": {"id": r["camera_id"], "name": r["source_label"], "current_name": r["camera_current_name"]},
             "run": {"id": str(r["run_id"]), "status": r["run_status"], "loop_no": r["loop_no"],
                     "started_at": _iso(r["run_started_at"]), "finished_at": _iso(r["run_finished_at"]),
                     "last_seen_at": _iso(r["run_last_seen_at"])},

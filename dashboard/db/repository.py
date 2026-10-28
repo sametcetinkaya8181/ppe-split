@@ -31,12 +31,14 @@ def upsert_camera(s: Session, cid: str, name: str, source_kind: str | None = Non
 
 
 def upsert_run(s: Session, run_id, camera_id: str, *, started_at: datetime | None = None, loop_no=None, fps=None,
-               width=None, height=None) -> None:
+               width=None, height=None, source_label=None, source_kind=None, source_ref=None) -> None:
     """Eksik metadata ile oluşturulabilir; sonradan gelen değerler yalnızca boşları/güncelleri doldurur
     (NULL hiçbir zaman dolu değeri ezmez). started_at yalnızca geriye çekilir. Durum (status) DEĞİŞMEZ:
-    tamamlanmış run running'e dönmez. Run başka kameraya aitse Conflict."""
+    tamamlanmış run running'e dönmez. Kaynak bilgisi (source_*) ilk dolu değerde DONAR; kamera adı sonradan
+    değişse de run'ın etiketi değişmez. Run başka kameraya aitse Conflict."""
     values = dict(id=run_id, camera_id=camera_id, status="running", loop_no=loop_no, fps=fps, width=width,
-                  height=height, last_seen_at=func.now())
+                  height=height, last_seen_at=func.now(), source_label=source_label or None,
+                  source_kind=source_kind, source_ref=source_ref or None)
     if started_at is not None:
         values["started_at"] = started_at
     stmt = insert(DetectorRun).values(**values)
@@ -48,7 +50,10 @@ def upsert_run(s: Session, run_id, camera_id: str, *, started_at: datetime | Non
               "width": func.coalesce(ex.width, DetectorRun.width),
               "height": func.coalesce(ex.height, DetectorRun.height),
               "started_at": func.least(DetectorRun.started_at, ex.started_at),
-              "last_seen_at": func.greatest(DetectorRun.last_seen_at, ex.last_seen_at)},
+              "last_seen_at": func.greatest(DetectorRun.last_seen_at, ex.last_seen_at),
+              "source_label": func.coalesce(DetectorRun.source_label, ex.source_label),
+              "source_kind": func.coalesce(DetectorRun.source_kind, ex.source_kind),
+              "source_ref": func.coalesce(DetectorRun.source_ref, ex.source_ref)},
         where=DetectorRun.camera_id == ex.camera_id,
     ).returning(DetectorRun.id)
     if s.execute(stmt).first() is None:
@@ -98,11 +103,13 @@ def insert_events(s: Session, rows: list[dict], identities: dict) -> set:
 
 # ---------------------------------------------------------------- rapor
 def complete_run(s: Session, *, run_id, camera_id: str, run_status: str, started_at: datetime,
-                 finished_at: datetime, loop_no, metadata: dict, rows: list[dict]) -> bool:
+                 finished_at: datetime, loop_no, metadata: dict, rows: list[dict], source_label=None,
+                 source_kind=None) -> bool:
     """Run'ı tamamlar ve kişi satırlarını (run_id, pid) üzerinden yazar.
     Döner: True = ilk kez tamamlandı, False = birebir aynı raporun tekrarı (değişiklik yok).
     Run zaten tamamlanmışsa ve gelen rapor (durum, bitiş, metadata, satırlar) farklıysa Conflict."""
-    upsert_run(s, run_id, camera_id, started_at=started_at, loop_no=loop_no)
+    upsert_run(s, run_id, camera_id, started_at=started_at, loop_no=loop_no, source_label=source_label,
+               source_kind=source_kind)
     run = s.execute(select(DetectorRun).where(DetectorRun.id == run_id).with_for_update()).scalar_one()
     if run.status in TERMINAL:
         existing = {r.pid: _report_tuple(r) for r in s.execute(
@@ -136,7 +143,8 @@ def _report_tuple_dict(r: dict) -> tuple:
 
 # ---------------------------------------------------------------- canlılık (seyrek)
 def heartbeat(s: Session, *, camera_id: str, name: str, source_kind=None, run_id=None, loop_no=None, fps=None,
-              width=None, height=None) -> None:
+              width=None, height=None, source_label=None, source_ref=None) -> None:
     upsert_camera(s, camera_id, name, source_kind)
     if run_id is not None:
-        upsert_run(s, run_id, camera_id, loop_no=loop_no, fps=fps, width=width, height=height)
+        upsert_run(s, run_id, camera_id, loop_no=loop_no, fps=fps, width=width, height=height,
+                   source_label=source_label, source_kind=source_kind, source_ref=source_ref)

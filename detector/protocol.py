@@ -96,6 +96,79 @@ def redact_text(text) -> str:
     return _QUERY_SECRET.sub(r"\1***", _URL_USERINFO.sub(r"\1***@", str(text)))
 
 
+# ---------------------------------------------------------------- kamera kimliği
+CAMERA_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")      # dashboard ve DB kısıtıyla aynı
+_EXPLICIT_ID = re.compile(r"^\[([^\]]*)\]\s*(.*)$", re.S)
+CAMERA_ID_MODES = ("index", "source")
+
+
+def _split_label(item: str, fallback: str) -> tuple[str, str]:
+    """'Kapı=rtsp://...' -> ('Kapı', 'rtsp://...'). Etiket yoksa: dosya adı veya fallback."""
+    if "=" in item:
+        left, right = item.split("=", 1)
+        if "://" not in left and "/" not in left and "\\" not in left and left.strip():
+            return left.strip(), right.strip()
+    if source_kind(item) == "file":
+        stem = re.split(r"[\\/]", item)[-1].rsplit(".", 1)[0]
+        return (stem or fallback), item
+    return fallback, item
+
+
+def _source_camera_id(source: str) -> str:
+    """Kaynağın kendisinden türetilen, sıradan bağımsız kimlik. Kimlik bilgisi (kullanıcı/parola/token) kimliğe
+    girmez: URL'ler maskelenmiş hâlinin özetiyle temsil edilir."""
+    kind = source_kind(source)
+    s = source.strip()
+    if kind == "webcam":
+        return f"webcam{int(s)}"[:40]
+    if kind == "file":
+        stem = re.split(r"[\\/]", s)[-1].rsplit(".", 1)[0]
+        return (re.sub(r"[^A-Za-z0-9_-]", "_", stem).strip("_") or "file")[:40]
+    import hashlib
+    digest = hashlib.sha256(redact_source(s).encode("utf-8")).hexdigest()[:12]
+    return f"{kind}_{digest}"
+
+
+def camera_entries(items, mode: str = "index") -> tuple[list[tuple[str, str, str]], list[str]]:
+    """Kaynak listesini (kimlik, etiket, kaynak) üçlülerine çevirir.
+
+    - '[kimlik]Etiket=kaynak' veya '[kimlik]kaynak': kullanıcının açıkça verdiği SABİT kimlik (önerilen).
+    - mode='source': öneksiz kaynaklar için kimlik kaynaktan türetilir (dosya adı, webcam indeksi, URL özeti);
+      kaynak sırası değişse de aynı kalır.
+    - mode='index' (varsayılan, eski davranış): öneksiz kaynak 'cam<sıra>' alır. Sıra değişirse aynı kimlik başka
+      kaynağa geçer; bu kimlikler için uyarı döner.
+    Geçersiz/tekrarlanan kimlik ProtocolError'dır (sessizce düzeltilmez). Döner: (girdiler, uyarılar)."""
+    if mode not in CAMERA_ID_MODES:
+        raise ProtocolError(f"CAMERA_ID_MODE '{mode}' geçersiz; izin verilenler: {', '.join(CAMERA_ID_MODES)}")
+    out, warnings, seen = [], [], {}
+    for n, raw in enumerate(items, start=1):
+        item = str(raw).strip()
+        m = _EXPLICIT_ID.match(item)
+        if m:
+            cid, item = m.group(1).strip(), m.group(2).strip()
+            if not CAMERA_ID_RE.match(cid):
+                raise ProtocolError(f"{n}. kaynak: kamera kimliği geçersiz ({cid!r}); yalnızca harf, rakam, _ ve - "
+                                    "(en fazla 40 karakter)")
+            label, source = _split_label(item, f"Kamera {cid}")
+        elif mode == "source":
+            label, source = _split_label(item, "")
+            cid = _source_camera_id(source)
+            label = label or f"Kamera {cid}"
+        else:
+            cid = f"cam{n}"
+            label, source = _split_label(item, f"YouTube {n}" if source_kind(item) == "youtube" else f"Kamera {n}")
+            warnings.append(f"{cid}: kimlik kaynak SIRASINDAN türetildi; kaynak listesi değişirse bu kimlik başka bir "
+                            f"kaynağa geçer. Sabit kimlik için '[kimlik]...' öneki veya CAMERA_ID_MODE=source kullanın.")
+        if not source:
+            raise ProtocolError(f"{n}. kaynak boş")
+        if cid in seen:
+            raise ProtocolError(f"kamera kimliği '{cid}' birden fazla kaynakta kullanılıyor ({seen[cid]}. ve {n}. "
+                                "kaynak); her kaynağa benzersiz '[kimlik]' verin")
+        seen[cid] = n
+        out.append((cid, label, source))
+    return out, warnings
+
+
 # ---------------------------------------------------------------- incident yaşam döngüsü
 class IncidentTracker:
     """Bir run içindeki ihlal yaşam döngüleri: start -> (ongoing...) -> end aynı incident_id'yi taşır.

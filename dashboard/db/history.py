@@ -5,6 +5,8 @@ Olay (violation_events satırı) sayısı ile ihlal (incident) sayısı ayrı ra
 sayısını artırmaz.
 
 Incident alanları olaylardan türetilir (violation_events GROUP BY incident_id):
+  source_label: run'ın kendi kaynak etiketi (0003; run başında donar). NULL = eski kayıt, kaynak doğrulanamadı;
+                cameras.name GÜNCEL addır ve geçmişe ait gibi kullanılmaz.
   started_at  : incident'ın ilk olayının occurred_at'i (UTC). Sıralama, tarih filtresi ve sayfalama anahtarı.
                 Bir incident başladığı döneme aittir: tarih aralığı başlangıca göre uygulanır.
   ended_at    : end olayının occurred_at'i (yoksa NULL).
@@ -148,7 +150,7 @@ def _incident_rows(*, camera_id=None, run_id=None, date_from=None, date_to=None,
     missing_h, missing_v = agg.c.missing_helmet, agg.c.missing_vest
     return (select(
         INC.c.id.label("incident_id"), INC.c.run_id, INC.c.camera_id, INC.c.pid,
-        CAM.c.name.label("camera_name"),
+        CAM.c.name.label("camera_current_name"), RUN.c.source_label, RUN.c.source_kind, RUN.c.source_ref,
         RUN.c.status.label("run_status"), RUN.c.loop_no, RUN.c.started_at.label("run_started_at"),
         RUN.c.finished_at.label("run_finished_at"), RUN.c.last_seen_at.label("run_last_seen_at"),
         agg.c.started_at, agg.c.ended_at, agg.c.last_event_at, agg.c.event_count, agg.c.ongoing_count,
@@ -227,7 +229,7 @@ def summary(s: Session, *, camera_id=None, run_id=None, date_from=None, date_to=
         select(q.c.status, func.count().label("n")).group_by(q.c.status))}
 
     cams = s.execute(select(
-        q.c.camera_id, func.min(q.c.camera_name).label("camera_name"),
+        q.c.camera_id, func.min(q.c.camera_current_name).label("camera_name"),
         func.count().label("incidents"), func.count().filter(ver).label("verified"),
         func.count().filter(and_(ver, h)).label("helmet"), func.count().filter(and_(ver, v)).label("vest"),
         func.count().filter(q.c.status == "active").label("active"),
@@ -306,7 +308,8 @@ def _run_select(active_window: float):
     liveness = case((RUN.c.status != "running", None),
                     (RUN.c.last_seen_at >= func.now() - timedelta(seconds=active_window), "live"),
                     else_="no_heartbeat")
-    return select(RUN.c.id.label("run_id"), RUN.c.camera_id, CAM.c.name.label("camera_name"), RUN.c.loop_no,
+    return select(RUN.c.id.label("run_id"), RUN.c.camera_id, CAM.c.name.label("camera_current_name"),
+                  RUN.c.source_label, RUN.c.source_kind, RUN.c.source_ref, RUN.c.loop_no,
                   RUN.c.status, liveness.label("liveness"), RUN.c.started_at, RUN.c.finished_at,
                   RUN.c.last_seen_at, RUN.c.fps, RUN.c.width, RUN.c.height, RUN.c.report_metadata,
                   persons.label("person_count"), persons_viol.label("persons_with_violation"),

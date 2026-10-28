@@ -70,21 +70,10 @@ GREEN, RED, GRAY = (0, 200, 0), (0, 0, 255), (160, 160, 160)
 
 
 # ---------------------------------------------------------------- kaynak listesi
-def _split_name(item, n):
-    """'Kapı=rtsp://...' -> ('Kapı', 'rtsp://...'). İsim yoksa otomatik isim verilir."""
-    if "=" in item:
-        left, right = item.split("=", 1)
-        if "://" not in left and "/" not in left and "\\" not in left and left.strip():
-            return left.strip(), right.strip()
-    if _is_youtube(item):
-        return f"YouTube {n}", item
-    if item.isdigit() or "://" in item:
-        return f"Kamera {n}", item
-    return Path(item).stem or f"Kamera {n}", item
-
-
 def parse_sources():
-    """Öncelik: komut satırı > .env (VIDEO_SOURCES + YOUTUBE_n/SOURCE_n) > sources.txt > videos/ klasörü > VIDEO_SOURCE."""
+    """Öncelik: komut satırı > .env (VIDEO_SOURCES + YOUTUBE_n/SOURCE_n) > sources.txt > videos/ klasörü > VIDEO_SOURCE.
+    Kamera kimliği: '[kimlik]Etiket=kaynak' öneki (sabit) > CAMERA_ID_MODE=source (kaynaktan türetilir) >
+    'cam<sıra>' (eski davranış; sıra değişirse kimlik kayar, açılışta uyarılır). Bkz. protocol.camera_entries."""
     raw = sys.argv[1:]
     if not raw:
         raw = [x.strip() for x in os.getenv("VIDEO_SOURCES", "").split(",") if x.strip()]
@@ -107,7 +96,10 @@ def parse_sources():
                    if f.suffix.lower() in exts and not f.name.startswith(".")]
     if not raw:
         raw = [os.getenv("VIDEO_SOURCE", "videos/video.mp4")]
-    return [(f"cam{i}",) + _split_name(item, i) for i, item in enumerate(raw, start=1)]
+    entries, warnings = protocol.camera_entries(raw, os.getenv("CAMERA_ID_MODE", "index").strip().lower())
+    for w in warnings:
+        print(f"UYARI: {w}", flush=True)
+    return entries
 
 
 # Gönderici (kamera başına, kimlikli olaylar, FIFO + retry): protocol.Sender
@@ -349,7 +341,11 @@ def stream_worker(cid, name, source, delay, stop):
 
 
 def main():
-    sources = parse_sources()
+    try:
+        sources = parse_sources()
+    except protocol.ProtocolError as exc:
+        print(f"HATA: kaynak yapılandırması geçersiz: {protocol.redact_text(exc)}", flush=True)
+        sys.exit(2)
     print(f"Model: {MODEL_PATH} | Cihaz: {DEVICE} | Dashboard: {protocol.redact_source(DASHBOARD_URL)} | "
           f"Kaynak sayısı: {len(sources)}", flush=True)
     for cid, name, src in sources:

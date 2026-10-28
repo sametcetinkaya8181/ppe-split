@@ -132,6 +132,7 @@
   .pill.stale, .pill.run_end { background: var(--warn); } .pill.orphan, .pill.unknown { background: #6b7580; }
   .pill.running { background: var(--series); } .pill.finished { background: var(--ok); }
   .pill.error { background: var(--bad); } .pill.interrupted { background: var(--warn); }
+  .legacy { font-style: italic; color: var(--warn); }
   .why { display: block; font-size: 12px; color: var(--ink-soft); margin-top: 2px; }
   .thumb { width: 44px; height: 56px; object-fit: cover; background: #0c0f12; display: block; cursor: zoom-in; }
   .more { padding: 10px 14px; border-top: 1px solid var(--line); }
@@ -144,7 +145,7 @@
   .chart svg { display: block; width: 100%; height: 240px; }
   .chart .grid line { stroke: var(--line); stroke-width: 1; }
   .chart text { fill: var(--ink-soft); font-size: 11px; font-family: var(--font); font-variant-numeric: tabular-nums; }
-  .chart .bar { fill: var(--series); }
+  .chart .bar { fill: var(--series); pointer-events: none; }   /* olayları altındaki .hit alanı alır */
   .chart .hit { fill: transparent; cursor: default; }
   .chart .hit:hover + .bar, .chart .bar.on { opacity: .75; }
   .tip { position: absolute; pointer-events: none; background: var(--ink); color: var(--panel); font-size: 12.5px; padding: 6px 9px; white-space: nowrap; transform: translate(-50%, calc(-100% - 8px)); }
@@ -157,7 +158,7 @@
   dialog.panel .dlg-head { position: sticky; top: 0; background: var(--panel); display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--line); padding-right: 10px; }
   dialog.panel .dlg-body { padding: 12px 14px; }
   dl.kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0 0 12px; font-size: 14px; }
-  dl.kv dt { color: var(--ink-soft); } dl.kv dd { margin: 0; }
+  dl.kv dt { color: var(--ink-soft); } dl.kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
   .detail-top { display: grid; grid-template-columns: 220px 1fr; gap: 16px; }
   .detail-top img { width: 100%; max-height: 300px; object-fit: contain; background: #0c0f12; cursor: zoom-in; }
   @media (max-width: 640px) { .detail-top { grid-template-columns: 1fr; } .page, main { padding: 12px 16px; } .filters select, .filters input { min-width: 0; width: 100%; } .filters label { flex: 1 1 140px; } }
@@ -258,7 +259,7 @@
       <details class="tbl"><summary>Tablo olarak göster</summary><div class="tscroll" id="sDailyTable"></div></details>
     </div>
     <div>
-      <div class="box"><h2>Kamera bazlı dağılım</h2><div id="sCams"></div></div>
+      <div class="box"><h2>Kamera bazlı dağılım (kamera kimliğine göre)</h2><div id="sCams"></div></div>
       <div class="box"><h2>Durum dağılımı</h2><div id="sStatusTbl"></div></div>
     </div>
   </div>
@@ -523,6 +524,13 @@ const th = h => el("th", typeof h === "string" ? { text: h } : h);
 const table = (heads, rows) => el("table", null, el("thead", null, el("tr", null, heads.map(th))), el("tbody", null, rows));
 const kv = list => el("dl", { class: "kv" }, list.filter(Boolean).flatMap(([k, v]) => [el("dt", { text: k }), el("dd", null, v)]));
 
+const LEGACY = "Eski kayıt: kaynak doğrulanamadı";
+// Geçmiş kayıt run'ın kendi (donmuş) etiketiyle gösterilir; yoksa kameranın bugünkü adı geçmişe yazılmaz.
+const srcName = x => x.source_verified ? x.camera_name : LEGACY;
+function camCell(x) {
+  return el("td", null, el("span", { class: x.source_verified ? null : "legacy", text: srcName(x) }),
+    el("span", { class: "why", text: x.camera_id + (x.source_ref ? ` · ${x.source_ref}` : "") }));
+}
 function zoom(url) { $("dlgImg").src = url; $("dlg").showModal(); }
 function thumbOf(url, alt) {
   if (!url || !SNAP_RE.test(url)) return el("span", { class: "why", text: "yok" });
@@ -534,7 +542,7 @@ function thumbOf(url, alt) {
 }
 function openDetail(title, ...nodes) {
   $("detailTitle").textContent = title;
-  $("detailBody").replaceChildren(...nodes);
+  $("detailBody").replaceChildren(...nodes.filter(n => n != null));   // null düğüm "null" metni olarak yazılmasın
   if (!$("detail").open) $("detail").showModal();
 }
 
@@ -555,11 +563,11 @@ function incidentRow(i) {
   const btn = el("button", { type: "button", text: "Detay" });
   btn.onclick = () => showIncident(i.incident_id);
   return el("tr", null,
-    el("td", { text: fmtDT(i.started_at) }), el("td", { text: i.camera_name }), el("td", { text: `#${i.track_id}` }),
+    el("td", { text: fmtDT(i.started_at) }), camCell(i), el("td", { text: `#${i.track_id}` }),
     el("td", { text: i.missing || "–" }), statusCell(i.status, i.status_reason),
     el("td", { text: i.status === "active" ? "sürüyor" : fmtDur(i.duration_sec) }),
     el("td", { class: "num", text: fmtN(i.event_count) }),
-    el("td", null, thumbOf(i.snapshot, `${i.camera_name} iz ${i.track_id} ihlal anı`)), el("td", null, btn));
+    el("td", null, thumbOf(i.snapshot, `${i.camera_id} iz ${i.track_id} ihlal anı`)), el("td", null, btn));
 }
 async function loadHistory(append) {
   if (H.busy) return;
@@ -593,7 +601,10 @@ async function showIncident(id) {
       : el("div", { class: "empty", text: d.snapshot_missing ? "Görüntü dosyası bulunamadı." : "Görüntü kaydı yok." });
     const video = d.video_first_sec == null ? "–" : `${d.video_first_sec} – ${d.video_last_sec} sn`;
     const info = kv([
-      ["Kamera", `${d.camera.name} (${d.camera.id})`],
+      ["Kamera (bu kayıttaki kaynak)", d.camera.name ?? LEGACY],
+      ["Kamera kimliği", d.camera.id + (d.camera.current_name && d.camera.current_name !== d.camera.name
+        ? ` · bugünkü adı: ${d.camera.current_name}` : "")],
+      d.source_ref ? ["Kaynak", `${d.source_ref}${d.source_kind ? ` (${d.source_kind})` : ""}`] : null,
       ["İz ID", `#${d.track_id} (bu run içindeki takip numarası; kişi kimliği değildir)`],
       ["Eksik ekipman", d.missing || "–"],
       d.missing_at_start && d.missing_at_start !== d.missing ? ["Başlangıçta eksik", d.missing_at_start] : null,
@@ -657,8 +668,10 @@ function drawChart(daily) {
     const bar = sv("path", { class: "bar", d: barPath(cx - bw / 2, y, bw, h) });
     hit.onmouseenter = hit.onclick = () => {
       tip.textContent = `${fmtDay(x.day)} · ${x.verified} ihlal (baret ${x.helmet}, yelek ${x.vest})`;
-      tip.style.left = `${14 + cx}px`; tip.style.top = `${12 + Math.min(y, m.t + ih - 4)}px`;
       tip.hidden = false;
+      const half = tip.offsetWidth / 2;                     // kenardaki çubukta ipucu kutunun dışına taşmasın
+      tip.style.left = `${Math.min(Math.max(14 + cx, half + 4), box.clientWidth - half - 4)}px`;
+      tip.style.top = `${12 + Math.min(y, m.t + ih - 4)}px`;
     };
     hit.onmouseleave = () => { tip.hidden = true; };
     svg.append(hit, bar);
@@ -680,7 +693,8 @@ function renderStats(d) {
   const maxCam = Math.max(1, ...d.by_camera.map(c => c.verified));
   $("sCams").replaceChildren(d.by_camera.length ? table(["Kamera", "", { text: "İhlal", class: "num" },
       { text: "Baret", class: "num" }, { text: "Yelek", class: "num" }, { text: "Olay", class: "num" }],
-    d.by_camera.map(c => el("tr", null, el("td", { text: c.camera_name }),
+    d.by_camera.map(c => el("tr", null, el("td", null, c.camera_id,
+        el("span", { class: "why", text: c.camera_name && c.camera_name !== c.camera_id ? `bugünkü adı: ${c.camera_name}` : "" })),
       el("td", { class: "hbar-cell" }, el("div", { class: "hbar", style: `width:${(c.verified / maxCam * 100).toFixed(1)}%`,
                                                    title: `${c.verified} ihlal` })),
       el("td", { class: "num", text: fmtN(c.verified) }), el("td", { class: "num", text: fmtN(c.helmet) }),
@@ -749,7 +763,7 @@ async function loadRuns(append) {
     d.items.forEach(r => {
       const btn = el("button", { type: "button", text: "Detay" });
       btn.onclick = () => showRun(r.run_id);
-      body.append(el("tr", null, el("td", { text: fmtDT(r.started_at) }), el("td", { text: r.camera_name }), runStatusCell(r),
+      body.append(el("tr", null, el("td", { text: fmtDT(r.started_at) }), camCell(r), runStatusCell(r),
         el("td", { class: "num", text: r.loop_no ?? "–" }), el("td", { text: runDur(r) }),
         el("td", { class: "num", text: fmtN(r.person_count) }), el("td", { class: "num", text: fmtN(r.persons_with_violation) }),
         el("td", { class: "num", text: fmtN(r.verified_incidents) }), el("td", { class: "num", text: fmtN(r.event_count) }),
@@ -768,7 +782,9 @@ async function showRun(id) {
     const rep = r.report;
     const reasons = rep ? Object.entries(rep.unclosed_by_reason).map(([k, n]) => `${REASON[k] || k}: ${n}`).join(" · ") : "";
     const info = kv([
-      ["Kamera", `${r.camera_name} (${r.camera_id})`],
+      ["Kamera (bu run'daki kaynak)", srcName(r)],
+      ["Kamera kimliği", r.camera_id + (r.camera_current_name ? ` · bugünkü adı: ${r.camera_current_name}` : "")],
+      r.source_ref ? ["Kaynak", `${r.source_ref}${r.source_kind ? ` (${r.source_kind})` : ""}`] : null,
       ["Durum", el("span", null, pill(r.status, RUN_STATUS[r.status] || r.status),
                    r.liveness === "no_heartbeat" ? " canlılık sinyali yok" : r.liveness === "live" ? " canlı" : "")],
       ["Başlangıç", fmtDT(r.started_at)], ["Bitiş", r.finished_at ? fmtDT(r.finished_at) : "–"],
@@ -784,7 +800,7 @@ async function showRun(id) {
     const go = el("button", { type: "button", text: "Bu run'ın ihlallerini listele" });
     go.onclick = () => {
       H.run = r.run_id;
-      $("hRunChip").querySelector("span").textContent = `Run ${r.run_id.slice(0, 8)} · ${r.camera_name}`;
+      $("hRunChip").querySelector("span").textContent = `Run ${r.run_id.slice(0, 8)} · ${srcName(r)}`;
       $("hRunChip").hidden = false;
       $("detail").close();
       showView("history", true);
@@ -817,6 +833,7 @@ function showView(v, user) {
   if (v !== "live") refreshView(v);
 }
 document.querySelectorAll(".tabs button").forEach(b => { b.onclick = () => showView(b.dataset.view, true); });
+window.addEventListener("hashchange", () => showView(location.hash.slice(1), false));   // geri/ileri ve elle adres
 $("hForm").onsubmit = e => { e.preventDefault(); loadHistory(false); };
 $("hReset").onclick = () => { $("hForm").reset(); H.run = null; $("hRunChip").hidden = true; loadHistory(false); };
 $("hRunChip").querySelector("button").onclick = () => { H.run = null; $("hRunChip").hidden = true; loadHistory(false); };

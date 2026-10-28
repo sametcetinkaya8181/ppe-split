@@ -23,7 +23,7 @@ def test_ready_200_at_head(client, db_url, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", db_url)
     r = client.get("/health/ready")
     assert r.status_code == 200
-    assert r.json() == {"status": "ready", "db": "ok", "schema": "current", "revision": ["0002"]}
+    assert r.json() == {"status": "ready", "db": "ok", "schema": "current", "revision": ["0003"]}
 
 
 def test_ready_503_when_schema_outdated(client, db_url, monkeypatch):
@@ -32,7 +32,7 @@ def test_ready_503_when_schema_outdated(client, db_url, monkeypatch):
     try:
         r = client.get("/health/ready")
         assert r.status_code == 503
-        assert r.json() == {"status": "not_ready", "db": "ok", "schema": "outdated", "current": [], "expected": ["0002"]}
+        assert r.json() == {"status": "not_ready", "db": "ok", "schema": "outdated", "current": [], "expected": ["0003"]}
     finally:
         command.upgrade(alembic_cfg(), "head")
     assert client.get("/health/ready").status_code == 200
