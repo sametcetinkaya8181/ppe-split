@@ -97,3 +97,43 @@ def test_existing_endpoints_unchanged(client, engine):
     with engine.connect() as c:
         for t in ("cameras", "detector_runs", "violation_events", "person_run_reports"):
             assert c.execute(text(f"SELECT count(*) FROM {t}")).scalar() == 0, t
+
+
+def test_detector_v2_payload_accepted_by_existing_endpoints(client, engine):
+    """FAZ 2 dedektör payload'ı (kimlikli olaylar, farklı run'dan olay, yeni rapor alanları) mevcut uçlarla uyumlu."""
+    import base64
+    run_old, run_new = "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"
+    inc = "33333333-3333-4333-8333-333333333333"
+    start = {"type": "start", "pid": 4, "t": 2.1, "missing": "Baretsiz", "helmet_rate": 0, "vest_rate": 100,
+             "box": [100, 100, 200, 400], "event_id": "44444444-4444-4444-8444-444444444444", "run_id": run_old,
+             "camera_id": "camv2", "incident_id": inc, "occurred_at": "2026-10-28T11:29:00.123Z",
+             "missing_helmet": True, "missing_vest": False, "snapshot_b64": base64.b64encode(JPG).decode()}
+    end = dict(start, type="end", missing="", missing_helmet=False, event_id="55555555-5555-4555-8555-555555555555",
+               run_id=run_new)
+    end.pop("snapshot_b64")
+    payload = {"cam": "camv2", "name": "V2", "run_id": run_new, "camera_id": "camv2",
+               "meta": {"source": "rtsp://***@10.0.0.5/s", "source_kind": "rtsp", "run_id": run_new, "status": "running",
+                        "fps": 10.0, "width": 640, "height": 480, "error": None, "loop": 2, "proc_fps": 9.5},
+               "summary": {"t": 2.1, "people": 1, "ok": 0, "viol": 1, "analyzing": 0, "raw_helmets": 0, "raw_vests": 1},
+               "people": [], "events": [start, end]}
+    r = client.post("/ingest/frame", files={"frame": ("f.jpg", JPG, "image/jpeg")}, data={"payload": json.dumps(payload)})
+    assert r.status_code == 200 and r.json() == {"ok": True}
+    alerts = [a for a in client.get("/api/alerts").json() if a["cam"] == "camv2"]
+    by_type = {a["type"]: a for a in alerts}
+    assert by_type["start"]["event_id"] == start["event_id"] and by_type["start"]["run_id"] == run_old
+    assert by_type["end"]["incident_id"] == inc and by_type["end"]["run_id"] == run_new
+    assert by_type["start"]["snapshot"].startswith("/snapshots/") and "snapshot_b64" not in by_type["start"]
+    assert client.get(by_type["start"]["snapshot"]).content == JPG
+    cam = next(c for c in client.get("/api/state").json()["cameras"] if c["id"] == "camv2")
+    assert cam["meta"]["source"] == "rtsp://***@10.0.0.5/s"
+
+    rep = {"cam": "camv2", "name": "V2", "status": "running", "run_id": run_new, "camera_id": "camv2",
+           "run_status": "finished", "loop": 2, "source_kind": "rtsp", "started_at": "2026-10-28T11:28:00.000Z",
+           "finished_at": "2026-10-28T11:30:00.000Z", "video_time_sec": 120.0, "error": None,
+           "unclosed_incidents": [{"incident_id": inc, "pid": 4, "reason": "stale", "t": 99.0}],
+           "unclosed_overflow": 0, "orphan_events": 0,
+           "report": [{"pid": 4, "first": 0.1, "last": 9.0, "n": 50, "helmet": 5, "vest": 95, "violation": True}]}
+    assert client.post("/ingest/report", json=rep).json() == {"ok": True}
+    assert [r for r in client.get("/api/report").json() if r["cam"] == "camv2"][0]["pid"] == 4
+    with engine.connect() as c:                                  # FAZ 2'de de DB'ye yazım yok
+        assert c.execute(text("SELECT count(*) FROM violation_events")).scalar() == 0

@@ -26,21 +26,19 @@ os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")           # OpenCV/FFmpeg gü
 os.environ.setdefault("OPENCV_FFMPEG_LOGLEVEL", "-8")
 
 import base64
-import json
 import logging
 import multiprocessing as mp
 import re
 import sys
-import threading
 import time
 from collections import Counter
 
 import cv2
-import requests
 import torch
 from ultralytics import YOLO
 
 import ppe_core as core
+import protocol
 
 MODEL_PATH = os.getenv("MODEL_PATH", "models/best.pt")
 DASHBOARD_URL = os.getenv("DASHBOARD_URL", "http://localhost:8000").rstrip("/")
@@ -64,6 +62,9 @@ VID_STRIDE = int(os.getenv("VID_STRIDE", 1))       # her N. kareyi işle
 JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", 80))
 STREAM_WIDTH = int(os.getenv("STREAM_WIDTH", 960))
 BUFFER = os.getenv("BUFFER", "1") == "1"            # canlı akışta kareleri sırayla kuyruğa al (donmayı önler)
+SEND_TIMEOUT = float(os.getenv("SEND_TIMEOUT", 5))      # dashboard HTTP isteği zaman aşımı (sn)
+EVENT_QUEUE_MAX = int(os.getenv("EVENT_QUEUE_MAX", 2000))  # kamera başına bellekteki en fazla bekleyen olay
+DRAIN_TIMEOUT = float(os.getenv("DRAIN_TIMEOUT", 10))   # kapanışta kuyruğu boşaltmak için en fazla bekleme (sn)
 
 GREEN, RED, GRAY = (0, 200, 0), (0, 0, 255), (160, 160, 160)
 
@@ -109,53 +110,7 @@ def parse_sources():
     return [(f"cam{i}",) + _split_name(item, i) for i, item in enumerate(raw, start=1)]
 
 
-# ---------------------------------------------------------------- gönderici (kamera başına)
-class Sender(threading.Thread):
-    """Ağ gecikmesi inference'ı yavaşlatmasın diye ayrı thread. Kareler: en yenisi kazanır.
-    Olaylar (alert) asla düşmez; gönderilemezse bir sonraki denemeye kalır."""
-    def __init__(self, cid, name):
-        super().__init__(daemon=True)
-        self.cid, self.name = cid, name
-        self.cv = threading.Condition()
-        self.latest, self.events = None, []
-        self.sess = requests.Session()
-        if INGEST_TOKEN:
-            self.sess.headers["X-Token"] = INGEST_TOKEN
-        self._last_err = 0.0
-
-    def submit(self, jpg, payload, events):
-        with self.cv:
-            self.latest = (jpg, payload)
-            self.events.extend(events)
-            self.cv.notify()
-
-    def post_report(self, report, status):
-        try:
-            self.sess.post(f"{DASHBOARD_URL}/ingest/report",
-                           json={"cam": self.cid, "name": self.name, "report": report, "status": status},
-                           timeout=5)
-        except requests.RequestException as e:
-            print(f"[{self.cid}] rapor gönderilemedi: {e}", flush=True)
-
-    def run(self):
-        while True:
-            with self.cv:
-                self.cv.wait_for(lambda: self.latest is not None)
-                (jpg, payload), self.latest = self.latest, None
-                events, self.events = self.events, []
-            payload.update(cam=self.cid, name=self.name, events=events)
-            try:
-                r = self.sess.post(f"{DASHBOARD_URL}/ingest/frame",
-                                   files={"frame": ("f.jpg", jpg, "image/jpeg")},
-                                   data={"payload": json.dumps(payload)}, timeout=5)
-                r.raise_for_status()
-            except requests.RequestException as e:
-                with self.cv:
-                    self.events[:0] = events            # olayları geri koy
-                if time.time() - self._last_err > 5:
-                    print(f"[{self.cid}] Dashboard'a ulaşılamıyor ({DASHBOARD_URL}): {e}", flush=True)
-                    self._last_err = time.time()
-                time.sleep(1)
+# Gönderici (kamera başına, kimlikli olaylar, FIFO + retry): protocol.Sender
 
 
 # ---------------------------------------------------------------- çizim / yardımcılar
@@ -225,7 +180,12 @@ def resolve_source(source):
 
 
 # ---------------------------------------------------------------- tek kaynağın işlenmesi
-def run_once(model, cid, name, source, sender, loop_no):
+def run_once(model, cid, name, source, sender, loop_no, stop=None):
+    """Tek run: kaynağı açar ve sonuna kadar işler. Her çağrı YENİ bir run_id üretir (tekrar oynatma ve yeniden
+    bağlanma = yeni run). Kaynak açıldıktan sonra run nasıl biterse bitsin (finished / error / interrupted) rapor
+    finally içinde Sender kuyruğuna girer; kaynak hiç açılamazsa run başlamamış sayılır ve rapor gönderilmez."""
+    run_id = protocol.new_id()
+    shown, kind = protocol.redact_source(source), protocol.source_kind(source)
     if _is_youtube(source):
         print(f"[{cid}] YouTube adresi çözülüyor (10-20 sn sürebilir)…", flush=True)
     real = resolve_source(source)
@@ -239,23 +199,55 @@ def run_once(model, cid, name, source, sender, loop_no):
     W, H = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     cap.release()
     if W == 0:
-        raise RuntimeError(f"Kaynak açılamadı (OpenCV akışı açamadı): {source}")
+        raise RuntimeError(f"Kaynak açılamadı (OpenCV akışı açamadı): {shown}")
     print(f"[{cid}] Açıldı: {W}x{H} @ {fps:.0f} fps, model çalışıyor…", flush=True)
 
+    started_at = protocol.utc_now_iso()
     is_file = isinstance(src, str) and os.path.isfile(src)
-    meta = {"source": str(source), "fps": round(fps, 1), "width": W, "height": H,
+    meta = {"source": shown, "source_kind": kind, "run_id": run_id, "fps": round(fps, 1), "width": W, "height": H,
             "status": "running", "error": None, "loop": loop_no, "proc_fps": 0.0}
 
     model.predictor = None                       # tracker durumunu sıfırla
     monitor = core.PPEMonitor()
+    tracker = protocol.IncidentTracker()         # incident durumu run'a özel
     extra = {"stream_buffer": True} if (BUFFER and not is_file) else {}   # canlı akış/kamera: kare kaybını önle
-    results = model.track(source=src, stream=True, persist=True, tracker=TRACKER,
-                          conf=CONF, imgsz=IMGSZ, device=DEVICE, vid_stride=VID_STRIDE,
-                          verbose=False, **extra)
+    run_status, error, progress = "error", None, {"t": 0.0}
+    try:
+        results = model.track(source=src, stream=True, persist=True, tracker=TRACKER,
+                              conf=CONF, imgsz=IMGSZ, device=DEVICE, vid_stride=VID_STRIDE,
+                              verbose=False, **extra)
+        _process(model, cid, results, fps, W, H, is_file, meta, monitor, tracker, sender, run_id, stop, progress)
+        run_status = "interrupted" if (stop is not None and stop.is_set()) else "finished"
+    except KeyboardInterrupt:
+        run_status = "interrupted"
+        raise
+    except Exception as exc:
+        error = protocol.redact_text(exc)[:300]
+        raise
+    finally:
+        t = progress["t"]
+        tracker.close_all("run_end", t)          # açık kalan incident'lar: sahte end üretilmez, raporda listelenir
+        report = [{"pid": int(pid), "first": round(s["first"], 1), "last": round(s["last"], 1),
+                   "n": s["n"], "helmet": round(100 * s["h"] / s["n"]),
+                   "vest": round(100 * s["v"] / s["n"]), "violation": s["ever_violation"]}
+                  for pid, s in sorted(monitor.stats.items()) if s["n"] > 0]
+        legacy = "running" if (LOOP and run_status != "interrupted") else run_status   # dashboard kamera durumu
+        sender.submit_report({"cam": cid, "name": name, "report": report, "status": legacy,
+                              "run_id": run_id, "camera_id": cid, "run_status": run_status, "loop": loop_no,
+                              "source_kind": kind, "started_at": started_at, "finished_at": protocol.utc_now_iso(),
+                              "video_time_sec": round(t, 1), "error": error,
+                              "unclosed_incidents": tracker.unclosed,
+                              "unclosed_overflow": tracker.unclosed_overflow, "orphan_events": tracker.orphans})
 
+
+def _process(model, cid, results, fps, W, H, is_file, meta, monitor, tracker, sender, run_id, stop, progress):
+    """Kare döngüsü (YOLO + ByteTrack + PPEMonitor). Karar mantığı değişmedi; olaylar burada kimlik kazanır."""
     wall0, tick, n_tick = time.time(), time.time(), 0
     for idx, r in enumerate(results, start=1):
+        if stop is not None and stop.is_set():
+            return
         t = idx * VID_STRIDE / fps
+        progress["t"] = t
         frame = r.orig_img.copy()
         persons, helmets, vests = [], [], []
         b = r.boxes
@@ -279,12 +271,20 @@ def run_once(model, cid, name, source, sender, loop_no):
 
         helmet_map = core.match_items(persons, helmets, core.head_region)
         vest_map = core.match_items(persons, vests, core.torso_region)
-        statuses, events = monitor.update(t, (W, H), persons, helmet_map, vest_map)
+        statuses, raw_events = monitor.update(t, (W, H), persons, helmet_map, vest_map)
 
-        for e in events:
+        events = []
+        for e in raw_events:                     # kimlikler olay doğduğu anda verilir; retry'da değişmez
+            try:
+                e = protocol.enrich_event(e, run_id=run_id, camera_id=cid, tracker=tracker)
+            except protocol.ProtocolError as exc:
+                print(f"[{cid}] HATA: olay sözleşme dışı, gönderilmedi: {exc}", flush=True)
+                continue
             if e["type"] == "start":
                 attach_snapshot(e, frame)
             print(f"[{cid}] [{e['t']:6.1f}s] {e['type'].upper():7} ID {e['pid']} {e['missing']}", flush=True)
+            events.append(e)
+        tracker.sweep(monitor.state.keys(), t)   # PPEMonitor'ün unuttuğu (STALE) kişiler: end ÜRETİLMEZ
 
         vals = list(statuses.values())
         people = [{"pid": int(pid), "status": st, "helmet": round(h * 100), "vest": round(v * 100)}
@@ -303,57 +303,64 @@ def run_once(model, cid, name, source, sender, loop_no):
             meta["proc_fps"] = round(n_tick / (now - tick), 1)
             tick, n_tick = now, 0
 
-        if jpg:
-            sender.submit(jpg, {"meta": dict(meta), "summary": summary, "people": people}, events)
+        # jpg None olsa da (kodlama hatası) olaylar kuyruğa girer
+        sender.submit(jpg, {"meta": dict(meta), "summary": summary, "people": people,
+                            "run_id": run_id, "camera_id": cid}, events)
 
         if is_file:                              # dosyayı gerçek zamanlı hızda oynat
             ahead = wall0 + t - time.time()
             if ahead > 0:
                 time.sleep(ahead)
 
-    report = [{"pid": int(pid), "first": round(s["first"], 1), "last": round(s["last"], 1),
-               "n": s["n"], "helmet": round(100 * s["h"] / s["n"]),
-               "vest": round(100 * s["v"] / s["n"]), "violation": s["ever_violation"]}
-              for pid, s in sorted(monitor.stats.items()) if s["n"] > 0]
-    sender.post_report(report, "running" if LOOP else "finished")
 
-
-def stream_worker(cid, name, source, delay):
-    time.sleep(delay)                            # modeller aynı anda yüklenmesin
+def stream_worker(cid, name, source, delay, stop):
+    if stop.wait(delay):                         # modeller aynı anda yüklenmesin
+        return
     if os.getenv("VERBOSE", "0") != "1":         # "Waiting for stream" gibi zararsız uyarıları gizle
         logging.getLogger("ultralytics").setLevel(logging.ERROR)
-    sender = Sender(cid, name)
+    sender = protocol.Sender(cid, name, DASHBOARD_URL, INGEST_TOKEN, timeout=SEND_TIMEOUT, queue_max=EVENT_QUEUE_MAX)
     sender.start()
     try:
-        model = YOLO(MODEL_PATH)                 # her thread kendi modelini yükler (takip durumu ayrı kalır)
-    except Exception as exc:                     # noqa: BLE001
-        print(f"[{cid}] Model yüklenemedi: {exc}", flush=True)
-        return
-    loop_no = 0
-    while True:
-        loop_no += 1
         try:
-            run_once(model, cid, name, source, sender, loop_no)
+            model = YOLO(MODEL_PATH)             # her süreç kendi modelini yükler (takip durumu ayrı kalır)
         except Exception as exc:                 # noqa: BLE001
-            print(f"[{cid}] HATA: {exc}", flush=True)
-            time.sleep(3)                        # RTSP kopması vb. için yeniden dene
-            continue
-        if not LOOP:
-            break
+            print(f"[{cid}] Model yüklenemedi: {exc}", flush=True)
+            return
+        loop_no = 0
+        while not stop.is_set():
+            loop_no += 1
+            try:
+                run_once(model, cid, name, source, sender, loop_no, stop)
+            except Exception as exc:             # noqa: BLE001
+                print(f"[{cid}] HATA: {protocol.redact_text(exc)}", flush=True)
+                if stop.wait(3):                 # RTSP kopması vb. için yeniden dene
+                    break
+                continue
+            if not LOOP:
+                break
+    except KeyboardInterrupt:
+        pass
+    finally:                                     # bekleyen olay/raporları sınırlı süre boşalt
+        sender.close(DRAIN_TIMEOUT)
+        st = sender.snapshot_stats()
+        print(f"[{cid}] gönderici kapandı: {st.get('events_sent', 0)} olay, {st.get('reports_sent', 0)} rapor iletildi; "
+              f"düşürülen {st.get('dropped_permanent', 0) + st.get('dropped_queue_full', 0)}, "
+              f"atılan ongoing {st.get('evicted_ongoing', 0)}", flush=True)
 
 
 def main():
     sources = parse_sources()
-    print(f"Model: {MODEL_PATH} | Cihaz: {DEVICE} | Dashboard: {DASHBOARD_URL} | Kaynak sayısı: {len(sources)}",
-          flush=True)
+    print(f"Model: {MODEL_PATH} | Cihaz: {DEVICE} | Dashboard: {protocol.redact_source(DASHBOARD_URL)} | "
+          f"Kaynak sayısı: {len(sources)}", flush=True)
     for cid, name, src in sources:
-        print(f"  {cid}: {name}  <-  {src}", flush=True)
+        print(f"  {cid}: {name}  <-  {protocol.redact_source(src)}", flush=True)
 
     ctx = mp.get_context("spawn")
+    stop = ctx.Event()                           # kontrollü kapanış: süreçler run'ı 'interrupted' bitirip boşaltır
     stagger = float(os.getenv("START_DELAY", 2.0))   # GPU/model yükleri aynı anda başlamasın
     procs = {}
     for i, (cid, name, src) in enumerate(sources):
-        p = ctx.Process(target=stream_worker, args=(cid, name, src, i * stagger), daemon=True)
+        p = ctx.Process(target=stream_worker, args=(cid, name, src, i * stagger, stop), daemon=True)
         p.start()
         procs[cid] = p
 
@@ -366,10 +373,16 @@ def main():
                     print(f"[{cid}] süreç sona erdi (çıkış kodu {p.exitcode})", flush=True)
             time.sleep(1)
     except KeyboardInterrupt:
-        print("Durduruluyor…", flush=True)
-    finally:
+        print(f"Durduruluyor… (bekleyen olaylar en fazla {DRAIN_TIMEOUT:.0f} sn gönderilmeye çalışılır)", flush=True)
+        stop.set()
+        deadline = time.time() + DRAIN_TIMEOUT + SEND_TIMEOUT + 5
         for p in procs.values():
+            p.join(max(0.0, deadline - time.time()))
+    finally:
+        for cid, p in procs.items():
             if p.is_alive():
+                print(f"[{cid}] süreç zamanında kapanmadı; zorla sonlandırılıyor (bellekteki olaylar kaybolabilir)",
+                      flush=True)
                 p.terminate()
 
 

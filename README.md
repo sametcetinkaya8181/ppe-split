@@ -133,6 +133,13 @@ Her seferinde yazmak istemezsen `detector/.env` oluştur (örnek: `.env.example`
 | `STREAM_WIDTH` | `960` | Dashboard'a giden kare genişliği |
 | `LOOP` | `1` | Video bitince başa sar |
 | `INGEST_TOKEN` | boş | Doluysa dashboard (compose) ile aynı olmalı |
+| `SEND_TIMEOUT` | `5` | Dashboard HTTP isteği zaman aşımı (sn) |
+| `EVENT_QUEUE_MAX` | `2000` | Kamera başına bellekte bekleyebilecek en fazla olay. Dolarsa önce en eski `ongoing` atılır; atılacak `ongoing` yoksa yeni olay reddedilir (log + sayaç) |
+| `DRAIN_TIMEOUT` | `10` | Ctrl+C / kapanışta bekleyen olayları göndermek için en fazla süre (sn) |
+
+**Olay teslimi:** Her ihlal olayı `event_id`, `run_id`, `incident_id`, `camera_id` ve UTC `occurred_at` ile üretilir; dashboard'a ulaşılamazsa aynı kimliklerle tekrar denenir. Bekleyen olaylar yalnızca **bellekte** tutulur: Ctrl+C ile kapatınca en fazla `DRAIN_TIMEOUT` saniye gönderilmeye çalışılır, ama süreç zorla kapatılır veya çökerse gönderilmemiş olaylar kaybolur.
+
+Dedektör birim testleri (GPU gerekmez): `cd detector; .venv\Scripts\python -m pip install -r requirements-dev.txt; .venv\Scripts\python -m pytest`
 
 ## Sorun giderme
 - **`Cihaz: cpu` yazıyor:** `DEVICE=mps python detector.py` ile dene. Kontrol: `python -c "import torch; print(torch.backends.mps.is_available())"` → `True` olmalı.
