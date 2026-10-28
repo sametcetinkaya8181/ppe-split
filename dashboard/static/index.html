@@ -34,6 +34,12 @@
   }
   header h1 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: .2px; }
   #conn { font-size: 14px; display: flex; align-items: center; gap: 8px; }
+  .hdr-right { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; justify-content: flex-end; }
+  #userBox { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+  #userBox button { border-color: #17202a; color: #17202a; }
+  .login { max-width: 460px; margin: 40px auto 0; }
+  .login .filters label { flex: 1 1 100%; }
+  .login .filters input { width: 100%; }
   #conn i { width: 10px; height: 10px; border-radius: 50%; background: #17202a; display: inline-block; }
   #conn.live i { background: var(--ok); }
   #conn.err i { background: var(--bad); }
@@ -167,17 +173,33 @@
 <body>
 <header>
   <h1>Saha KKD İzleme: baret ve yelek</h1>
-  <div id="conn"><i></i><span id="connText">Bağlanıyor…</span></div>
+  <div class="hdr-right">
+    <div id="conn"><i></i><span id="connText">Bağlanıyor…</span></div>
+    <div id="userBox" hidden><span id="userName"></span><button type="button" id="logout">Çıkış</button></div>
+  </div>
 </header>
 
-<nav class="tabs" role="tablist" aria-label="Ekranlar">
+<div class="page" id="loginView" hidden>
+  <div class="box login">
+    <h2>Giriş</h2>
+    <form id="loginForm" class="filters">
+      <label>Kullanıcı adı<input name="username" autocomplete="username" required maxlength="64"></label>
+      <label>Parola<input name="password" type="password" autocomplete="current-password" required maxlength="256"></label>
+      <div class="actions"><button type="submit" class="primary">Giriş yap</button></div>
+    </form>
+    <p class="note">Hesaplar yönetici tarafından açılır. Parolanızı unuttuysanız yöneticinize başvurun.</p>
+    <div class="status-line" id="loginStatus" aria-live="polite"></div>
+  </div>
+</div>
+
+<nav class="tabs" id="appTabs" role="tablist" aria-label="Ekranlar" hidden>
   <button role="tab" id="tab-live" data-view="live" aria-controls="view-live" aria-selected="true">Canlı İzleme</button>
   <button role="tab" id="tab-history" data-view="history" aria-controls="view-history" aria-selected="false">İhlal Geçmişi</button>
   <button role="tab" id="tab-stats" data-view="stats" aria-controls="view-stats" aria-selected="false">İstatistikler</button>
   <button role="tab" id="tab-runs" data-view="runs" aria-controls="view-runs" aria-selected="false">Kamera / Run Raporları</button>
 </nav>
 
-<main id="view-live" role="tabpanel" aria-labelledby="tab-live">
+<main id="view-live" role="tabpanel" aria-labelledby="tab-live" hidden>
   <section>
     <p class="hint">Bir kameraya tıklayınca tam genişliğe büyür, tekrar tıklayınca küçülür.</p>
     <div class="grid" id="grid">
@@ -334,8 +356,9 @@ function syncCam(c) {
 }
 
 /* ---------- tek WebSocket ile tüm kareler ---------- */
+let WS = null;
 function connectWS() {
-  const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
+  const ws = WS = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
   ws.binaryType = "arraybuffer";
   ws.onmessage = e => {
     const u8 = new Uint8Array(e.data);
@@ -346,7 +369,7 @@ function connectWS() {
     t.img.src = url; t.url = url;
     if (old) setTimeout(() => URL.revokeObjectURL(old), 1000);
   };
-  ws.onclose = () => setTimeout(connectWS, 1000);
+  ws.onclose = () => { if (WS === ws && liveTimer) setTimeout(connectWS, 1000); };   // çıkışta yeniden bağlanma
 }
 
 /* ---------- uyarılar ---------- */
@@ -405,7 +428,9 @@ function renderPeople(cams) {
 /* ---------- durum döngüsü ---------- */
 async function tick() {
   try {
-    const d = await (await fetch(`/api/state?after=${after}`)).json();
+    const res = await fetch(`/api/state?after=${after}`);
+    if (res.status === 401) { showLogin("Oturum sona erdi; tekrar giriş yapın."); return; }
+    const d = await res.json();
     fails = 0;
     d.cameras.forEach(syncCam);
     const t = d.totals;
@@ -504,6 +529,11 @@ async function getJSON(path, params) {
   const q = new URLSearchParams();
   for (const [k, v] of Object.entries(params || {})) if (v != null && v !== "") q.append(k, v);
   const r = await fetch(path + (String(q) ? "?" + q : ""));
+  if (r.status === 401) {
+    showLogin("Oturum sona erdi; tekrar giriş yapın.");
+    throw new ApiError("Oturum gerekli.", 401);
+  }
+  if (r.status === 403) throw new ApiError("Bu ekran için yetkiniz yok.", 403);
   if (!r.ok) {
     let msg = r.status === 503 ? "Veritabanına şu an ulaşılamıyor; birazdan tekrar deneyin." : `İstek başarısız (HTTP ${r.status}).`;
     if (r.status === 422) {
@@ -567,7 +597,8 @@ function incidentRow(i) {
     el("td", { text: i.missing || "–" }), statusCell(i.status, i.status_reason),
     el("td", { text: i.status === "active" ? "sürüyor" : fmtDur(i.duration_sec) }),
     el("td", { class: "num", text: fmtN(i.event_count) }),
-    el("td", null, thumbOf(i.snapshot, `${i.camera_id} iz ${i.track_id} ihlal anı`)), el("td", null, btn));
+    el("td", null, i.snapshot_restricted ? el("span", { class: "why", text: "yetki gerekli" })
+      : thumbOf(i.snapshot, `${i.camera_id} iz ${i.track_id} ihlal anı`)), el("td", null, btn));
 }
 async function loadHistory(append) {
   if (H.busy) return;
@@ -598,7 +629,8 @@ async function showIncident(id) {
     const d = await getJSON(`/api/history/incidents/${encodeURIComponent(id)}`);
     const pic = SNAP_RE.test(d.snapshot || "")
       ? Object.assign(el("img", { alt: "İhlal başlangıç anı" }), { src: d.snapshot, onclick: () => zoom(d.snapshot) })
-      : el("div", { class: "empty", text: d.snapshot_missing ? "Görüntü dosyası bulunamadı." : "Görüntü kaydı yok." });
+      : el("div", { class: "empty", text: d.snapshot_restricted ? "Görüntüyü yalnız sorumlu ve yönetici rolleri görebilir."
+        : d.snapshot_missing ? "Görüntü dosyası bulunamadı." : "Görüntü kaydı yok." });
     const video = d.video_first_sec == null ? "–" : `${d.video_first_sec} – ${d.video_last_sec} sn`;
     const info = kv([
       ["Kamera (bu kayıttaki kaynak)", d.camera.name ?? LEGACY],
@@ -827,7 +859,8 @@ async function refreshView(v) {
   else if (v === "runs") { renderCameras(cams); loadRuns(false); }
 }
 function showView(v, user) {
-  if (!VIEWS.includes(v)) v = "live";
+  if (!ME) return;
+  if (!VIEWS.includes(v) || (v === "live" && !LIVE_OK)) v = LIVE_OK ? "live" : "stats";
   VIEWS.forEach(x => { $("view-" + x).hidden = x !== v; $("tab-" + x).setAttribute("aria-selected", String(x === v)); });
   if (user) window.history.replaceState(null, "", v === "live" ? location.pathname : "#" + v);
   if (v !== "live") refreshView(v);
@@ -850,11 +883,73 @@ window.addEventListener("resize", () => {
   clearTimeout(resizeT);
   resizeT = setTimeout(() => { if (!$("view-stats").hidden && lastDaily.length) drawChart(lastDaily); }, 150);
 });
-statsDefaultRange();
-showView(location.hash.slice(1), false);
-
-connectWS();
-tick(); setInterval(tick, 700);
+/* --- oturum (FAZ 6): sunucu tarafı oturum, HttpOnly çerez; CSRF token yalnız bellekte --- */
+let ME = null, CSRF = null, LIVE_OK = false, liveTimer = null;
+const ROLE_TR = { admin: "Yönetici", supervisor: "Sorumlu", viewer: "İzleyici" };
+function clearUserData() {         // önceki kullanıcının verisi (görüntüler dahil) gizli DOM'da kalmasın
+  for (const id of ["hTable", "rTable", "rCams", "sTiles", "sChart", "sCams", "sStatusTbl", "sDailyTable",
+                    "detailBody", "peopleWrap"]) $(id).replaceChildren();
+  for (const id of ["hStatus", "sStatus", "rStatus"]) setStatus(id, "");
+  $("hMore").hidden = true; $("rMore").hidden = true; $("hRunChip").hidden = true;
+  H.cursor = null; H.run = null; R.cursor = null; lastDaily = [];
+  tiles.forEach(t => { if (t.url) URL.revokeObjectURL(t.url); t.el.remove(); });
+  tiles.clear(); byIdx.clear(); $("gridEmpty").style.display = "";
+  clearFeed(); after = 0; total = 0; $("nTotal").textContent = "0";
+  $("reportWrap").replaceChildren(el("div", { class: "empty", text: "Dedektör bir videoyu bitirince rapor oluşur." }));
+  $("dlgImg").removeAttribute("src");
+}
+function showLogin(msg, isError = true) {
+  ME = null; CSRF = null; LIVE_OK = false;
+  if (liveTimer) { clearInterval(liveTimer); liveTimer = null; }
+  if (WS) { const w = WS; WS = null; w.close(); }
+  if ($("detail").open) $("detail").close();
+  if ($("dlg").open) $("dlg").close();
+  clearUserData();
+  $("loginView").hidden = false; $("appTabs").hidden = true; $("userBox").hidden = true;
+  VIEWS.forEach(x => { $("view-" + x).hidden = true; });
+  $("conn").className = ""; $("connText").textContent = "Oturum kapalı";
+  setStatus("loginStatus", msg || "", !!msg && isError);
+  $("loginForm").elements.username.focus();
+}
+function startApp(me) {
+  ME = me.user; CSRF = me.csrf_token; LIVE_OK = !!me.permissions.live;
+  $("loginView").hidden = true; $("appTabs").hidden = false; $("userBox").hidden = false;
+  $("userName").textContent = `${ME.username} · ${ROLE_TR[ME.role] || ME.role}`;
+  $("tab-live").hidden = !LIVE_OK;
+  if (!LIVE_OK) { $("conn").className = ""; $("connText").textContent = "Canlı izleme yetkisi yok"; }
+  statsDefaultRange();
+  showView(location.hash.slice(1), false);
+  if (LIVE_OK) { connectWS(); tick(); liveTimer = setInterval(tick, 700); }
+}
+async function boot() {
+  try {
+    const r = await fetch("/api/auth/me");
+    if (r.status === 401) return showLogin("", false);
+    if (!r.ok) return showLogin(r.status === 503 ? "Veritabanına şu an ulaşılamıyor; birazdan tekrar deneyin."
+                                                  : `Sunucu hatası (HTTP ${r.status}).`);
+    startApp(await r.json());
+  } catch (e) { showLogin("Dashboard sunucusuna ulaşılamıyor."); }
+}
+$("loginForm").onsubmit = async e => {
+  e.preventDefault();
+  const f = e.target.elements;
+  setStatus("loginStatus", "Giriş yapılıyor…");
+  try {
+    const r = await fetch("/api/auth/login", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: f.username.value, password: f.password.value }) });
+    f.password.value = "";
+    if (r.ok) return boot();
+    setStatus("loginStatus", { 401: "Kullanıcı adı veya parola hatalı ya da hesap geçici olarak kilitli.",
+      429: "Çok fazla başarısız deneme; bir süre sonra tekrar deneyin.",
+      503: "Veritabanına şu an ulaşılamıyor; birazdan tekrar deneyin." }[r.status] || `Giriş başarısız (HTTP ${r.status}).`, true);
+  } catch (err) { setStatus("loginStatus", "Dashboard sunucusuna ulaşılamıyor.", true); }
+};
+$("logout").onclick = async () => {
+  try { await fetch("/api/auth/logout", { method: "POST", headers: { "X-CSRF-Token": CSRF || "" } }); }
+  catch (e) { /* sunucuya ulaşılamasa da yerel durum temizlenir */ }
+  showLogin("Oturum kapatıldı.", false);
+};
+boot();
 </script>
 </body>
 </html>

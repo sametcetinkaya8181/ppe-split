@@ -8,7 +8,7 @@ from decimal import Decimal
 
 from sqlalchemy import (BigInteger, Boolean, CheckConstraint, ForeignKey, ForeignKeyConstraint, Identity, Index,
                         Integer, Numeric, SmallInteger, String, Text, UniqueConstraint, func, text)
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import DateTime
 
@@ -160,6 +160,66 @@ class ViolationEvent(Base):
     ingested_at: Mapped[datetime] = mapped_column(TZ, server_default=func.now())
     box: Mapped[list | None] = mapped_column(JSONB)
     snapshot_path: Mapped[str | None] = mapped_column(Text, unique=True)
+
+
+class AppUser(Base):
+    """0004: tarayıcı kullanıcısı. camera_scope NULL = tüm kameralar; dizi = yalnız bu kameralar."""
+    __tablename__ = "app_users"
+    __table_args__ = (
+        CheckConstraint("role IN ('admin', 'supervisor', 'viewer')", name="role"),
+        CheckConstraint("username ~ '^[a-z0-9_.-]{3,64}$'", name="username_format"),
+        CheckConstraint("password_hash LIKE '$argon2id$%'", name="password_hash_argon2id"),
+        CheckConstraint("failed_attempts >= 0", name="failed_attempts_non_negative"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    username: Mapped[str] = mapped_column(String(64), unique=True)
+    password_hash: Mapped[str] = mapped_column(Text)
+    role: Mapped[str] = mapped_column(String(16))
+    camera_scope: Mapped[list | None] = mapped_column(ARRAY(String(40)))
+    disabled: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    failed_attempts: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    locked_until: Mapped[datetime | None] = mapped_column(TZ)
+    password_changed_at: Mapped[datetime] = mapped_column(TZ, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(TZ, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(TZ, server_default=func.now())
+
+
+class UserSession(Base):
+    """0004: oturum. token_hash = SHA-256(çerezdeki token); token'ın kendisi saklanmaz."""
+    __tablename__ = "user_sessions"
+    __table_args__ = (
+        CheckConstraint("token_hash ~ '^[0-9a-f]{64}$'", name="token_hash_format"),
+        Index("ix_user_sessions_user", "user_id"),
+    )
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("app_users.id", ondelete="RESTRICT"))
+    csrf_token: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(TZ, server_default=func.now())
+    last_seen_at: Mapped[datetime] = mapped_column(TZ, server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(TZ)
+    revoked_at: Mapped[datetime | None] = mapped_column(TZ)
+    revoke_reason: Mapped[str | None] = mapped_column(String(32))
+
+
+class AuditLog(Base):
+    """0004: güvenlik olayları (yalnız ekleme). Parola/token/çerez/görüntü içermez."""
+    __tablename__ = "audit_log"
+    __table_args__ = (
+        CheckConstraint("outcome IN ('success', 'failure', 'denied')", name="outcome"),
+        CheckConstraint("detail IS NULL OR (jsonb_typeof(detail) = 'object' AND octet_length(detail::text) <= 4096)",
+                        name="detail_small_object"),
+        Index("ix_audit_log_at", text("at DESC"), text("id DESC")),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    at: Mapped[datetime] = mapped_column(TZ, server_default=func.now())
+    event: Mapped[str] = mapped_column(String(40))
+    outcome: Mapped[str] = mapped_column(String(10))
+    user_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("app_users.id", ondelete="RESTRICT"))
+    client_ip: Mapped[str | None] = mapped_column(String(45))
+    detail: Mapped[dict | None] = mapped_column(JSONB)
 
 
 class PersonRunReport(Base):

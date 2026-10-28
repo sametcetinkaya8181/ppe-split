@@ -73,7 +73,7 @@ def decode_cursor(cursor: str) -> tuple[datetime, uuid.UUID]:
 
 # ---------------------------------------------------------------- incident türetme
 def _incident_rows(*, camera_id=None, run_id=None, date_from=None, date_to=None, incident_id=None,
-                   active_window: float):
+                   active_window: float, camera_scope=None):
     """Her incident için türetilmiş alanlar + durum. Döner: alias'lı subquery."""
     start, end = E.c.event_type == "start", E.c.event_type == "end"
     agg = select(
@@ -100,6 +100,8 @@ def _incident_rows(*, camera_id=None, run_id=None, date_from=None, date_to=None,
         agg = agg.where(E.c.run_id == run_id)
     if incident_id is not None:
         agg = agg.where(E.c.incident_id == incident_id)
+    if camera_scope is not None:                  # nesne düzeyi yetki: kapsam dışı kamera hiç görünmez
+        agg = agg.where(E.c.camera_id.in_(list(camera_scope)))
     if date_from is not None or date_to is not None:
         # aday incident'lar: aralıkta en az bir olayı olanlar (indeksli dar tarama); toplama yine TÜM olaylarıyla
         cand = select(E.c.incident_id)
@@ -172,9 +174,9 @@ def _equipment_clause(q, equipment):
 
 
 def list_incidents(s: Session, *, camera_id=None, run_id=None, date_from=None, date_to=None, statuses=(),
-                   equipment=None, limit=50, cursor=None, active_window: float) -> dict:
+                   equipment=None, limit=50, cursor=None, active_window: float, camera_scope=None) -> dict:
     q = _incident_rows(camera_id=camera_id, run_id=run_id, date_from=date_from, date_to=date_to,
-                       active_window=active_window)
+                       active_window=active_window, camera_scope=camera_scope)
     conds = []
     if statuses:
         conds.append(q.c.status.in_(list(statuses)))
@@ -191,8 +193,8 @@ def list_incidents(s: Session, *, camera_id=None, run_id=None, date_from=None, d
     return {"items": page, "total": total, "next_cursor": nxt}
 
 
-def get_incident(s: Session, incident_id, *, active_window: float) -> dict | None:
-    q = _incident_rows(incident_id=incident_id, active_window=active_window)
+def get_incident(s: Session, incident_id, *, active_window: float, camera_scope=None) -> dict | None:
+    q = _incident_rows(incident_id=incident_id, active_window=active_window, camera_scope=camera_scope)
     row = s.execute(select(q)).mappings().first()
     if row is None:
         return None
@@ -212,9 +214,9 @@ def get_incident(s: Session, incident_id, *, active_window: float) -> dict | Non
 
 # ---------------------------------------------------------------- özet / analitik
 def summary(s: Session, *, camera_id=None, run_id=None, date_from=None, date_to=None, tz="UTC",
-            active_window: float) -> dict:
+            active_window: float, camera_scope=None) -> dict:
     q = _incident_rows(camera_id=camera_id, run_id=run_id, date_from=date_from, date_to=date_to,
-                       active_window=active_window)
+                       active_window=active_window, camera_scope=camera_scope)
     h, v, ver = q.c.missing_helmet, q.c.missing_vest, q.c.verified
     tot = s.execute(select(
         func.count().label("incidents"),
@@ -245,7 +247,9 @@ def summary(s: Session, *, camera_id=None, run_id=None, date_from=None, date_to=
     ev_conds = [c for c in ((E.c.camera_id == camera_id) if camera_id is not None else None,
                             (E.c.run_id == run_id) if run_id is not None else None,
                             (E.c.occurred_at >= date_from) if date_from is not None else None,
-                            (E.c.occurred_at < date_to) if date_to is not None else None) if c is not None]
+                            (E.c.occurred_at < date_to) if date_to is not None else None,
+                            E.c.camera_id.in_(list(camera_scope)) if camera_scope is not None else None)
+                if c is not None]
     events = dict.fromkeys(("start", "ongoing", "end"), 0) | {r.event_type: r.n for r in s.execute(
         select(E.c.event_type, func.count().label("n")).where(*ev_conds).group_by(E.c.event_type))}
     cam_ev = {r.camera_id: r.n for r in s.execute(
@@ -283,7 +287,7 @@ def valid_timezone(s: Session, tz: str) -> bool:
 
 
 # ---------------------------------------------------------------- kameralar / run'lar
-def list_cameras(s: Session, *, active_window: float) -> list:
+def list_cameras(s: Session, *, active_window: float, camera_scope=None) -> list:
     runs = select(func.count()).where(RUN.c.camera_id == CAM.c.id).scalar_subquery()
     last_run = select(RUN.c.started_at).where(RUN.c.camera_id == CAM.c.id).order_by(
         RUN.c.started_at.desc()).limit(1).scalar_subquery()
@@ -295,7 +299,9 @@ def list_cameras(s: Session, *, active_window: float) -> list:
     rows = s.execute(select(CAM.c.id, CAM.c.name, CAM.c.source_kind, CAM.c.created_at, CAM.c.last_seen_at,
                             runs.label("run_count"), last_run.label("last_run_started_at"),
                             running.label("live_runs"), incidents.label("incident_count"),
-                            events.label("event_count")).order_by(CAM.c.id)).mappings().all()
+                            events.label("event_count"))
+                     .where(*([CAM.c.id.in_(list(camera_scope))] if camera_scope is not None else []))
+                     .order_by(CAM.c.id)).mappings().all()
     return [dict(r) for r in rows]
 
 
@@ -318,8 +324,8 @@ def _run_select(active_window: float):
 
 
 def list_runs(s: Session, *, camera_id=None, date_from=None, date_to=None, statuses=(), limit=50, cursor=None,
-              active_window: float) -> dict:
-    conds = []
+              active_window: float, camera_scope=None) -> dict:
+    conds = [RUN.c.camera_id.in_(list(camera_scope))] if camera_scope is not None else []
     if camera_id is not None:
         conds.append(RUN.c.camera_id == camera_id)
     if date_from is not None:
@@ -339,8 +345,10 @@ def list_runs(s: Session, *, camera_id=None, date_from=None, date_to=None, statu
     return {"items": page, "total": total, "next_cursor": nxt}
 
 
-def get_run(s: Session, run_id, *, active_window: float) -> dict | None:
-    row = s.execute(_run_select(active_window).where(RUN.c.id == run_id)).mappings().first()
+def get_run(s: Session, run_id, *, active_window: float, camera_scope=None) -> dict | None:
+    row = s.execute(_run_select(active_window).where(
+        RUN.c.id == run_id, *([RUN.c.camera_id.in_(list(camera_scope))] if camera_scope is not None else []))
+    ).mappings().first()
     if row is None:
         return None
     out = dict(row)
@@ -348,7 +356,12 @@ def get_run(s: Session, run_id, *, active_window: float) -> dict | None:
         select(PRR.c.pid, PRR.c.first_sec, PRR.c.last_sec, PRR.c.observations, PRR.c.helmet_rate,
                PRR.c.vest_rate, PRR.c.ever_violation, PRR.c.updated_at)
         .where(PRR.c.run_id == run_id).order_by(PRR.c.pid)).mappings()]
-    q = _incident_rows(run_id=run_id, active_window=active_window)
+    q = _incident_rows(run_id=run_id, active_window=active_window, camera_scope=camera_scope)
     out["incidents_by_status"] = dict.fromkeys(STATUSES, 0) | {r.status: r.n for r in s.execute(
         select(q.c.status, func.count().label("n")).group_by(q.c.status))}
     return out
+
+
+def snapshot_camera(s: Session, snapshot_path: str) -> str | None:
+    """Snapshot'ın ait olduğu kamera (yetki denetimi için); DB'de referansı yoksa None."""
+    return s.execute(select(E.c.camera_id).where(E.c.snapshot_path == snapshot_path).limit(1)).scalar()

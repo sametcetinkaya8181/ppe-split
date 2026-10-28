@@ -53,6 +53,8 @@ def test_app_role_attributes_and_table_privileges(app_db):
     assert s["schema_create"] is False
     assert {t: p for t, p in s["tables"].items() if t in TABLES} == dict.fromkeys(TABLES, ["SELECT", "INSERT", "UPDATE"])
     assert s["tables"]["alembic_version"] == ["SELECT"]
+    assert s["tables"]["audit_log"] == ["SELECT", "INSERT"]                 # denetim kaydı yalnız ekleme
+    assert s["tables"]["app_users"] == s["tables"]["user_sessions"] == ["SELECT", "INSERT", "UPDATE"]
 
 
 @pytest.mark.parametrize("stmt", [
@@ -110,7 +112,7 @@ def test_existing_install_ownership_transfer_and_migrator_ddl(scratch_db):
     command.upgrade(alembic_cfg(mig), "head")
     with psycopg_conn(mig) as c:
         assert roles.grants(c, app=APP_ROLE) is True                    # sahip olarak yeniden yetki
-        assert c.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0003"
+        assert c.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0004"
 
     app = url_for(scratch_db, APP_ROLE)
     with psycopg_conn(app) as c:                                        # veri korunmuş, yeni sütun yazılabilir

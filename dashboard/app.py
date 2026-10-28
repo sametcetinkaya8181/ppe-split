@@ -14,12 +14,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, WebSocket
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, WebSocket
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy.exc import DBAPIError, IntegrityError, SQLAlchemyError
 
+from auth import routes as auth_routes
+from auth import security
+from auth.routes import require
+from auth.security import AuthCtx
 from db import history
 from db import repository as repo
 from db.health import check_ready
@@ -29,6 +32,8 @@ from ingest.redact import redact_source, redact_text
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
 INGEST_TOKEN = os.getenv("INGEST_TOKEN", "")
+# Kesintisiz token rotasyonu: geçiş süresince ikinci (yeni) token da kabul edilir. Bkz. docs/SECURITY.md.
+INGEST_TOKEN_NEXT = os.getenv("INGEST_TOKEN_NEXT", "")
 STALE_AFTER = float(os.getenv("STALE_AFTER", 5))
 MAX_ALERTS = 300
 # Sınırlar. Olay payload'ı (form alanı) Starlette tarafından zaten 1 MiB ile sınırlıdır.
@@ -38,10 +43,11 @@ MAX_SNAPSHOT_BYTES = int(os.getenv("MAX_SNAPSHOT_BYTES", 1024 * 1024))
 MAX_REPORT_BYTES = int(os.getenv("MAX_REPORT_BYTES", 1024 * 1024))
 MAX_REPORT_ROWS = int(os.getenv("MAX_REPORT_ROWS", 5000))
 HEARTBEAT_SEC = float(os.getenv("HEARTBEAT_SEC", 30))     # olaysız karelerde en sık DB canlılık yazımı
+WS_RECHECK_SEC = float(os.getenv("WS_RECHECK_SEC", 15))   # açık WebSocket'te oturumun yeniden doğrulanma aralığı
 
 log = logging.getLogger("ppe.ingest")
-if not INGEST_TOKEN:
-    log.warning("INGEST_TOKEN boş: /ingest uçları kimlik doğrulamasız (yalnızca 127.0.0.1'e bağlıyken kabul edilebilir).")
+for _w in security.validate_config(tuple(t for t in (INGEST_TOKEN, INGEST_TOKEN_NEXT) if t)):
+    log.warning(_w)
 
 SNAP_DIR = DATA_DIR / "snapshots"
 SNAP_DIR.mkdir(parents=True, exist_ok=True)
@@ -66,15 +72,34 @@ LOCK = threading.Lock()          # CAMS sözlüğü + uyarılar
 CAMS = {}
 ALERTS, ALERT_SEQ = [], 0
 
-app = FastAPI(title="PPE Dashboard")
+# OpenAPI/Swagger kapalı: API yüzeyini anonim kullanıcıya listelemez.
+app = FastAPI(title="PPE Dashboard", docs_url=None, redoc_url=None, openapi_url=None)
 STATIC = Path(__file__).parent / "static"
-app.mount("/snapshots", StaticFiles(directory=SNAP_DIR), name="snapshots")
+INDEX_HTML = (STATIC / "index.html").read_bytes()     # bellekten sunulur (Range işleme yolu yok)
 
 
-def _auth(token: Optional[str]):
-    if INGEST_TOKEN and not hmac.compare_digest((token or "").encode(), INGEST_TOKEN.encode()):
-        _rlog("auth", "UYARI: geçersiz/eksik X-Token ile ingest isteği reddedildi (401). Dedektör bu olayları "
-                      "DÜŞÜRÜR: detector/.env ve kök .env içindeki INGEST_TOKEN aynı olmalı.")
+def _ingest_rejected(conn):
+    _rlog("auth", "UYARI: geçersiz/eksik X-Token ile ingest isteği reddedildi (401). Dedektör bu olayları "
+                  "DÜŞÜRÜR: detector/.env ve kök .env içindeki INGEST_TOKEN aynı olmalı.")
+    security.audit("ingest_auth", "denied", conn=conn, detail={"path": conn.url.path[:120]},
+                   dedupe=f"ingest:{security.client_ip(conn)}")
+
+
+# Makine token'ı middleware'de gövde okunmadan denetlenir; _auth handler içinde ikinci savunma hattıdır.
+app.add_middleware(security.SecurityMiddleware, csp=security.csp_for(STATIC / "index.html"),
+                   ingest_tokens=lambda: (INGEST_TOKEN, INGEST_TOKEN_NEXT), on_ingest_reject=_ingest_rejected)
+app.include_router(auth_routes.router)
+
+
+def _auth(token: Optional[str], request: Optional[Request] = None):
+    """Makine kimliği (dedektör). Tarayıcı oturum çerezi burada HİÇ dikkate alınmaz."""
+    tokens = [t for t in (INGEST_TOKEN, INGEST_TOKEN_NEXT) if t]
+    if not tokens:
+        return
+    given = (token or "").encode()
+    if not any([hmac.compare_digest(given, t.encode()) for t in tokens]):
+        if request is not None:
+            _ingest_rejected(request)
         raise HTTPException(status_code=401, detail="bad token")
 
 
@@ -288,9 +313,9 @@ def _persist_events(cam: Cam, data: schemas.FramePayload, raw_events: list) -> l
 
 
 @app.post("/ingest/frame")
-def ingest_frame(frame: UploadFile = File(...), payload: str = Form(...),
+def ingest_frame(request: Request, frame: UploadFile = File(...), payload: str = Form(...),
                  x_token: Optional[str] = Header(None)):
-    _auth(x_token)
+    _auth(x_token, request)
     jpg = frame.file.read(MAX_FRAME_BYTES + 1)
     if len(jpg) > MAX_FRAME_BYTES:
         _http_error(413, f"kare {MAX_FRAME_BYTES} bayt sınırını aşıyor")
@@ -341,7 +366,7 @@ def _persist_report(rep: schemas.ReportIn):
 
 @app.post("/ingest/report")
 async def ingest_report(request: Request, x_token: Optional[str] = Header(None)):
-    _auth(x_token)
+    await run_in_threadpool(_auth, x_token, request)
     body = bytearray()
     async for chunk in request.stream():
         body += chunk
@@ -367,18 +392,65 @@ async def ingest_report(request: Request, x_token: Optional[str] = Header(None))
 # ---------------- tarayıcıya sunulanlar ----------------
 @app.get("/")
 def index():
-    return FileResponse(STATIC / "index.html")
+    """Yalnız uygulama kabuğu (veri içermez); veriler oturumlu API'lerden gelir. Giriş ekranı bu sayfadadır."""
+    return Response(INDEX_HTML, media_type="text/html; charset=utf-8", headers={"Cache-Control": "no-store"})
+
+
+SNAP_NAME = re.compile(r"^alert_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jpg$")
+
+
+@app.get("/snapshots/{name}")
+def snapshot(name: str, request: Request, ctx: AuthCtx = Depends(require("supervisor"))):
+    """İhlal görüntüsü: supervisor+ ve kameranın kapsamda olması. Adı bilmek erişim vermez; DB'de referansı olmayan
+    veya kapsam dışı dosya 404 (var/yok bilgisi sızmaz)."""
+    if not SNAP_NAME.match(name):
+        raise HTTPException(status_code=404, detail="bulunamadı")
+    cam = _read(history.snapshot_camera, f"snapshots/{name}")
+    path = SNAP_DIR / name
+    if cam is None or not ctx.camera_ok(cam) or path.is_symlink() or not path.is_file():
+        raise HTTPException(status_code=404, detail="bulunamadı")
+    security.audit("snapshot_access", "success", conn=request, user_id=ctx.user_id,
+                   detail={"snapshot": name, "camera_id": cam}, dedupe=f"snap:{ctx.token_hash}:{name}", every=3600)
+    # Snapshot'lar küçüktür (MAX_SNAPSHOT_BYTES); FileResponse'un Range ayrıştırması kullanılmaz.
+    return Response(path.read_bytes(), media_type="image/jpeg", headers={"Cache-Control": "private, no-store"})
+
+
+async def _ws_auth(ws: WebSocket) -> Optional[AuthCtx]:
+    try:
+        return await run_in_threadpool(security.authenticate, ws)
+    except HTTPException:                      # DB erişilemiyor
+        return None
 
 
 @app.websocket("/ws")
 async def ws_feed(ws: WebSocket):
-    """Mesaj: 1 bayt kamera indeksi + JPEG. Yavaş istemcide ara kareler atlanır (hep en yenisi gider)."""
+    """Mesaj: 1 bayt kamera indeksi + JPEG (biçim değişmedi). FAZ 6: aynı köken (Origin) + geçerli oturum +
+    supervisor; yalnız kapsamdaki kameraların kareleri gider; oturum her ~15 sn'de yeniden doğrulanır."""
+    reason, ctx = None, None
+    if not security.origin_ok(ws):
+        reason = "bad_origin"
+    else:
+        ctx = await _ws_auth(ws)
+        if ctx is None or not ctx.at_least("supervisor"):
+            reason = "auth_required" if ctx is None else "insufficient_role"
+    if reason:
+        await run_in_threadpool(security.audit, "ws_rejected", "denied", conn=ws,
+                                user_id=ctx.user_id if ctx else None, detail={"reason": reason},
+                                dedupe=f"ws:{reason}:{security.client_ip(ws)}")
+        await ws.close(code=1008)
+        return
     await ws.accept()
     sent = {}
+    recheck = time.monotonic() + WS_RECHECK_SEC
     try:
         while True:
+            if time.monotonic() >= recheck:
+                recheck = time.monotonic() + WS_RECHECK_SEC
+                if await _ws_auth(ws) is None:      # çıkış, iptal veya süre dolumu
+                    await ws.close(code=1008)
+                    return
             with LOCK:
-                cams = list(CAMS.values())
+                cams = [c for c in CAMS.values() if ctx.camera_ok(c.id)]
             any_sent = False
             for c in cams:
                 jpg, no = c.jpeg, c.frame_no
@@ -407,10 +479,10 @@ def _mjpeg(cam: Cam):
 
 
 @app.get("/video_feed/{cid}")
-def video_feed(cid: str):
+def video_feed(cid: str, ctx: AuthCtx = Depends(require("supervisor"))):
     with LOCK:
         cam = CAMS.get(cid)
-    if cam is None:
+    if cam is None or not ctx.camera_ok(cid):
         raise HTTPException(status_code=404, detail="no such camera")
     return _mjpeg(cam)
 
@@ -423,10 +495,10 @@ def _meta(c: Cam):
 
 
 @app.get("/api/state")
-def state(after: int = 0):
+def state(after: int = 0, ctx: AuthCtx = Depends(require("supervisor"))):
     with LOCK:
-        cams = sorted(CAMS.values(), key=lambda c: c.idx)
-        new_alerts = [a for a in ALERTS if a["id"] > after]
+        cams = sorted((c for c in CAMS.values() if ctx.camera_ok(c.id)), key=lambda c: c.idx)
+        new_alerts = [a for a in ALERTS if a["id"] > after and ctx.camera_ok(a.get("cam", ""))]
         seq = ALERT_SEQ
     cameras = [{"id": c.id, "idx": c.idx, "name": c.name, "meta": _meta(c),
                 "summary": c.summary, "people": c.people} for c in cams]
@@ -436,30 +508,36 @@ def state(after: int = 0):
 
 
 @app.get("/api/alerts")
-def alerts():
+def alerts(ctx: AuthCtx = Depends(require("supervisor"))):
     with LOCK:
-        return list(reversed(ALERTS))
+        return [a for a in reversed(ALERTS) if ctx.camera_ok(a.get("cam", ""))]
 
 
 @app.get("/api/report")
-def report():
+def report(ctx: AuthCtx = Depends(require("supervisor"))):
     with LOCK:
-        cams = sorted(CAMS.values(), key=lambda c: c.idx)
+        cams = sorted((c for c in CAMS.values() if ctx.camera_ok(c.id)), key=lambda c: c.idx)
     return [{**r, "cam": c.id, "cam_name": c.name} for c in cams for r in c.report]
 
 
 @app.get("/healthz")
 def health():
-    with LOCK:
-        cams = list(CAMS.values())
-    return {"cameras": len(cams), "running": sum(_meta(c)["status"] == "running" for c in cams)}
+    """Canlılık (anonim): yalnız durum. Kamera sayısı vb. işletim bilgisi oturumlu API'lerdedir."""
+    return {"status": "ok"}
 
 
 @app.get("/health/ready")
-def health_ready():
-    """DB erişimi + beklenen Alembic revision. /healthz'den bağımsızdır (canlılık değil hazır olma)."""
+def health_ready(request: Request):
+    """DB erişimi + beklenen Alembic revision. Anonim çağrı yalnız durum alır; ayrıntı (revision) yalnız admin."""
     ok, detail = check_ready()
-    return JSONResponse(detail, status_code=200 if ok else 503)
+    if not os.access(SNAP_DIR, os.W_OK):       # ayrıcalıksız süreç snapshot yazamıyorsa hazır DEĞİL (sessiz kayıp yok)
+        ok, detail = False, {**detail, "status": "not_ready", "storage": "snapshots_not_writable"}
+    try:
+        ctx = security.authenticate(request)
+    except HTTPException:
+        ctx = None
+    body = detail if ctx is not None and ctx.at_least("admin") else {"status": detail["status"]}
+    return JSONResponse(body, status_code=200 if ok else 503)
 
 
 # ---------------- geçmiş (PostgreSQL, salt okuma) ----------------
@@ -516,13 +594,16 @@ def _missing_text(helmet: bool, vest: bool) -> str:
     return " + ".join(x for x, f in ((schemas.HELMET_TEXT, helmet), (schemas.VEST_TEXT, vest)) if f)
 
 
-def _snapshot(path: Optional[str]) -> dict:
-    """Yalnızca DB'deki doğrulanmış biçimdeki ve diskte gerçekten bulunan dosya için URL verir."""
+def _snapshot(path: Optional[str], images: bool = True) -> dict:
+    """Yalnızca DB'deki doğrulanmış biçimdeki ve diskte gerçekten bulunan dosya için URL verir. images=False
+    (viewer rolü): görüntü bağlantısı verilmez, yalnız var olduğu belirtilir (kişisel veri en aza indirme)."""
     if not path:
-        return {"snapshot": None, "snapshot_missing": False}
+        return {"snapshot": None, "snapshot_missing": False, "snapshot_restricted": False}
+    if not images:
+        return {"snapshot": None, "snapshot_missing": False, "snapshot_restricted": True}
     if not _SNAP_URL.match(path) or not (SNAP_DIR / path.split("/", 1)[1]).is_file():
-        return {"snapshot": None, "snapshot_missing": True}
-    return {"snapshot": "/" + path, "snapshot_missing": False}
+        return {"snapshot": None, "snapshot_missing": True, "snapshot_restricted": False}
+    return {"snapshot": "/" + path, "snapshot_missing": False, "snapshot_restricted": False}
 
 
 def _report_summary(md: Optional[dict]) -> Optional[dict]:
@@ -547,7 +628,7 @@ def _source_out(r: dict) -> dict:
             "source_ref": r["source_ref"]}
 
 
-def _incident_out(r: dict) -> dict:
+def _incident_out(r: dict, images: bool = True) -> dict:
     return {"incident_id": str(r["incident_id"]), "camera_id": r["camera_id"], **_source_out(r),
             "run_id": str(r["run_id"]), "track_id": r["pid"],
             "status": r["status"], "status_reason": r["status_reason"], "verified": r["verified"],
@@ -560,7 +641,7 @@ def _incident_out(r: dict) -> dict:
             "missing": _missing_text(r["missing_helmet"], r["missing_vest"]),
             "missing_at_start": _missing_text(r["start_missing_helmet"], r["start_missing_vest"]),
             "event_count": r["event_count"], "ongoing_count": r["ongoing_count"],
-            **_snapshot(r["snapshot_path"])}
+            **_snapshot(r["snapshot_path"], images)}
 
 
 def _run_out(r: dict) -> dict:
@@ -596,27 +677,30 @@ def history_incidents(camera_id: Optional[str] = CameraQ, run_id: Optional[uuid.
                       date_from: Optional[str] = Query(None, alias="from"),
                       date_to: Optional[str] = Query(None, alias="to"),
                       status: list[str] = Query([]), equipment: Optional[str] = None,
-                      limit: int = Query(50, ge=1, le=200), cursor: Optional[str] = Query(None, max_length=200)):
+                      limit: int = Query(50, ge=1, le=200), cursor: Optional[str] = Query(None, max_length=200),
+                      ctx: AuthCtx = Depends(require("viewer"))):
     f, t = _range_params(date_from, date_to)
     statuses = _enum_list(status, history.STATUSES, "status")
     if equipment is not None:
         _enum_list([equipment], history.EQUIPMENT, "equipment")
     res = _read(history.list_incidents, camera_id=camera_id, run_id=run_id, date_from=f, date_to=t,
                 statuses=statuses, equipment=equipment, limit=limit, cursor=cursor,
-                active_window=ACTIVE_WINDOW_SEC)
-    return {"items": [_incident_out(r) for r in res["items"]], "total": res["total"],
+                active_window=ACTIVE_WINDOW_SEC, camera_scope=ctx.scope)
+    images = ctx.at_least("supervisor")
+    return {"items": [_incident_out(r, images) for r in res["items"]], "total": res["total"],
             "next_cursor": res["next_cursor"], "limit": limit}
 
 
 @app.get("/api/history/incidents/{incident_id}")
-def history_incident(incident_id: uuid.UUID):
-    r = _read(history.get_incident, incident_id, active_window=ACTIVE_WINDOW_SEC)
-    if r is None:
+def history_incident(incident_id: uuid.UUID, ctx: AuthCtx = Depends(require("viewer"))):
+    r = _read(history.get_incident, incident_id, active_window=ACTIVE_WINDOW_SEC, camera_scope=ctx.scope)
+    images = ctx.at_least("supervisor")
+    if r is None:                               # yok VEYA kapsam dışı: aynı yanıt (varlık bilgisi sızmaz)
         raise HTTPException(status_code=404, detail="incident bulunamadı")
     md = r["report_metadata"] if isinstance(r["report_metadata"], dict) else {}
     unclosed = next((u for u in md.get("unclosed_incidents") or []
                      if isinstance(u, dict) and u.get("incident_id") == str(r["incident_id"])), None)
-    return {**_incident_out(r),
+    return {**_incident_out(r, images),
             "camera": {"id": r["camera_id"], "name": r["source_label"], "current_name": r["camera_current_name"]},
             "run": {"id": str(r["run_id"]), "status": r["run_status"], "loop_no": r["loop_no"],
                     "started_at": _iso(r["run_started_at"]), "finished_at": _iso(r["run_finished_at"]),
@@ -628,46 +712,48 @@ def history_incident(incident_id: uuid.UUID):
                           "video_time_sec": _num(e["video_time_sec"]),
                           "missing": _missing_text(e["missing_helmet"], e["missing_vest"]),
                           "helmet_rate": e["helmet_rate"], "vest_rate": e["vest_rate"], "box": e["box"],
-                          **_snapshot(e["snapshot_path"])} for e in r["timeline"]],
+                          **_snapshot(e["snapshot_path"], images)} for e in r["timeline"]],
             "timeline_truncated": r["timeline_truncated"]}
 
 
 @app.get("/api/history/summary")
 def history_summary(camera_id: Optional[str] = CameraQ, run_id: Optional[uuid.UUID] = None,
                     date_from: Optional[str] = Query(None, alias="from"),
-                    date_to: Optional[str] = Query(None, alias="to"), tz: str = TzQ):
+                    date_to: Optional[str] = Query(None, alias="to"), tz: str = TzQ,
+                    ctx: AuthCtx = Depends(require("viewer"))):
     f, t = _range_params(date_from, date_to)
     _check_tz(tz)
     res = _read(history.summary, camera_id=camera_id, run_id=run_id, date_from=f, date_to=t, tz=tz,
-                active_window=ACTIVE_WINDOW_SEC)
+                active_window=ACTIVE_WINDOW_SEC, camera_scope=ctx.scope)
     return {**res, "filters": {"camera_id": camera_id, "run_id": str(run_id) if run_id else None,
                                "from": _iso(f), "to": _iso(t), "tz": tz}}
 
 
 @app.get("/api/history/cameras")
-def history_cameras():
+def history_cameras(ctx: AuthCtx = Depends(require("viewer"))):
     return [{"id": c["id"], "name": c["name"], "source_kind": c["source_kind"], "created_at": _iso(c["created_at"]),
              "last_seen_at": _iso(c["last_seen_at"]), "run_count": c["run_count"],
              "last_run_started_at": _iso(c["last_run_started_at"]), "live_runs": c["live_runs"],
              "incident_count": c["incident_count"], "event_count": c["event_count"]}
-            for c in _read(history.list_cameras, active_window=ACTIVE_WINDOW_SEC)]
+            for c in _read(history.list_cameras, active_window=ACTIVE_WINDOW_SEC, camera_scope=ctx.scope)]
 
 
 @app.get("/api/history/runs")
 def history_runs(camera_id: Optional[str] = CameraQ, date_from: Optional[str] = Query(None, alias="from"),
                  date_to: Optional[str] = Query(None, alias="to"), status: list[str] = Query([]),
-                 limit: int = Query(50, ge=1, le=200), cursor: Optional[str] = Query(None, max_length=200)):
+                 limit: int = Query(50, ge=1, le=200), cursor: Optional[str] = Query(None, max_length=200),
+                 ctx: AuthCtx = Depends(require("viewer"))):
     f, t = _range_params(date_from, date_to)
     statuses = _enum_list(status, RUN_STATUSES, "status")
     res = _read(history.list_runs, camera_id=camera_id, date_from=f, date_to=t, statuses=statuses, limit=limit,
-                cursor=cursor, active_window=ACTIVE_WINDOW_SEC)
+                cursor=cursor, active_window=ACTIVE_WINDOW_SEC, camera_scope=ctx.scope)
     return {"items": [_run_out(r) for r in res["items"]], "total": res["total"],
             "next_cursor": res["next_cursor"], "limit": limit}
 
 
 @app.get("/api/history/runs/{run_id}")
-def history_run(run_id: uuid.UUID):
-    r = _read(history.get_run, run_id, active_window=ACTIVE_WINDOW_SEC)
+def history_run(run_id: uuid.UUID, ctx: AuthCtx = Depends(require("viewer"))):
+    r = _read(history.get_run, run_id, active_window=ACTIVE_WINDOW_SEC, camera_scope=ctx.scope)
     if r is None:
         raise HTTPException(status_code=404, detail="run bulunamadı")
     return {**_run_out(r), "incidents_by_status": r["incidents_by_status"],

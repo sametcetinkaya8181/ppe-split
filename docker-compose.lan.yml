@@ -1,0 +1,54 @@
+# LAN dağıtımı (TLS ters vekil). VARSAYILAN DAĞITIM DEĞİLDİR; yalnız açık karar ve docs/LAN_DEPLOYMENT.md
+# kontrol listesi tamamlandıktan sonra:
+#   docker compose -f docker-compose.yml -f docker-compose.lan.yml up -d
+# Gerekli .env: PPE_SITE, LAN_BIND (ör. sunucunun LAN IP'si), INGEST_TOKEN (boş olamaz). PPE_TLS üretimde
+# kurumun sertifikası olmalı (internal = yalnız deneme).
+name: ppe-split
+
+services:
+  dashboard:
+    environment:
+      SECURITY_PROFILE: lan
+      ALLOWED_HOSTS: ${PPE_SITE:?PPE_SITE gerekli (ör. ppe.santiye.local)}
+      TRUSTED_PROXIES: 172.31.250.10/32
+    networks:
+      default: {}
+      edge:
+        ipv4_address: 172.31.250.11
+    # Tarayıcı erişimi yalnız vekil üzerinden. Dedektör aynı makinede 127.0.0.1:8000'e (yalnız /ingest, token'lı)
+    # göndermeye devam eder; bu port LAN'a açılmaz.
+
+  proxy:
+    image: caddy:2.8.4-alpine
+    restart: unless-stopped
+    depends_on:
+      dashboard:
+        condition: service_healthy
+    ports:
+      - "${LAN_BIND:?LAN_BIND gerekli (sunucunun LAN IP'si; 0.0.0.0 önerilmez)}:443:443"
+      - "${LAN_BIND}:80:80"
+    environment:
+      PPE_SITE: ${PPE_SITE}
+      PPE_UPSTREAM: 172.31.250.11:8000
+      PPE_TLS: ${PPE_TLS:-internal}
+    volumes:
+      - ./deploy/lan/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    read_only: true
+    tmpfs: ["/tmp", "/config"]
+    cap_drop: ["ALL"]
+    cap_add: ["NET_BIND_SERVICE"]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    networks:
+      edge:
+        ipv4_address: 172.31.250.10
+
+networks:
+  edge:
+    ipam:
+      config:
+        - subnet: 172.31.250.0/28
+
+volumes:
+  caddy_data:

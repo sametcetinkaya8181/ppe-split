@@ -101,6 +101,8 @@ def grants(conn: psycopg.Connection, *, app: str) -> bool:
     cur.execute(sql.SQL("GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {}").format(I(app)))
     if cur.execute("SELECT to_regclass('public.alembic_version')").fetchone()[0]:
         cur.execute(sql.SQL("REVOKE INSERT, UPDATE ON public.alembic_version FROM {}").format(I(app)))
+    if cur.execute("SELECT to_regclass('public.audit_log')").fetchone()[0]:      # 0004: denetim kaydı yalnız ekleme
+        cur.execute(sql.SQL("REVOKE UPDATE ON public.audit_log FROM {}").format(I(app)))
     return True
 
 

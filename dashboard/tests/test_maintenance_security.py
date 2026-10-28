@@ -113,7 +113,7 @@ def test_unexpected_error_returns_generic_500_without_secrets(api, monkeypatch):
     def boom(*a, **k):
         raise ValueError("postgresql+psycopg://u:GIZLI_PAROLA@db/x Traceback")
     monkeypatch.setattr(history, "list_cameras", boom)
-    r = TestClient(app_module.app, raise_server_exceptions=False).get("/api/history/cameras")
+    r = TestClient(app_module.app, raise_server_exceptions=False, cookies=api.cookies).get("/api/history/cameras")
     assert r.status_code == 500 and "GIZLI_PAROLA" not in r.text and "Traceback" not in r.text
 
 

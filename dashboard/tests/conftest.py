@@ -106,12 +106,42 @@ def conn(engine):
         tx.rollback()
 
 
-ALL_TABLES = "violation_events, incidents, person_run_reports, detector_runs, cameras"
+ALL_TABLES = ("violation_events, incidents, person_run_reports, detector_runs, cameras, user_sessions, audit_log, "
+              "app_users")
+ORIGIN = {"Origin": "http://testserver"}
+TEST_PASSWORD = "Test-Parola-2026!x"
+
+
+def make_user(username: str, role: str, cameras=None, password: str = TEST_PASSWORD) -> int:
+    """Uygulama rolüyle (DATABASE_URL) kullanıcı oluşturur."""
+    from auth import store
+    from db.session import get_session
+    with get_session() as s, s.begin():
+        return store.create_user(s, username, password, role, cameras)
+
+
+def login(client, username: str, password: str = TEST_PASSWORD) -> dict:
+    """Oturum açar; çerez istemcide kalır. Döner: /api/auth/login gövdesi (csrf_token dahil)."""
+    r = client.post("/api/auth/login", json={"username": username, "password": password}, headers=ORIGIN)
+    assert r.status_code == 200, r.text
+    client.headers["X-CSRF-Token"] = r.json()["csrf_token"]
+    assert client.get("/api/auth/me").status_code == 200      # oturum önbelleği ısınır (DB kesintisi testleri)
+    return r.json()
+
+
+def reset_security_state():
+    from auth import security
+    security.IP_LIMITER.clear()
+    with security._CACHE_LOCK:
+        security._CACHE.clear()
+    with security._AUDIT_LOCK:
+        security._AUDIT_SEEN.clear()
 
 
 @pytest.fixture
 def api(db_url, engine, monkeypatch):
-    """Uygulama ppe_test'e bağlı; her test boş DB, boş RAM ve boş test snapshot klasörüyle başlar."""
+    """Uygulama ppe_test'e bağlı; her test boş DB, boş RAM ve boş test snapshot klasörüyle başlar.
+    FAZ 6: istemci 'test_admin' (admin, tüm kameralar) olarak oturum açmıştır; X-CSRF-Token başlığı hazırdır."""
     import app as app_module
     from fastapi.testclient import TestClient
     regrant_app()
@@ -125,12 +155,25 @@ def api(db_url, engine, monkeypatch):
     app_module.flush_heartbeats()
     app_module._HB.clear()
     app_module._HB_PENDING.clear()
+    reset_security_state()
     for f in app_module.SNAP_DIR.iterdir():
         f.unlink()
-    yield TestClient(app_module.app)
+    client = TestClient(app_module.app)
+    make_user("test_admin", "admin")
+    login(client, "test_admin")
+    yield client
     app_module.flush_heartbeats()                 # arka plan canlılık yazımı TRUNCATE ile yarışmasın
     with engine.begin() as c:                     # sonraki (şema/migration) testlerine veri taşınmasın
         c.execute(text(f"TRUNCATE {ALL_TABLES} RESTART IDENTITY"))
+    reset_security_state()
+
+
+@pytest.fixture
+def anon(api):
+    """Oturumsuz istemci (aynı temiz DB/RAM durumu; api fixture'ı veriyi hazırlar)."""
+    import app as app_module
+    from fastapi.testclient import TestClient
+    return TestClient(app_module.app)
 
 
 def count(engine, table: str, where: str = "", **params) -> int:

@@ -88,12 +88,46 @@ async function clickAt(selector) {
 
 await cdp("Page.enable");
 await cdp("Runtime.enable");
-const api = async (base, path) => (await fetch(base + path)).json();
+// FAZ 6: Node tarafı doğrudan API çağrıları için ayrı oturum (tarayıcı oturumundan bağımsız)
+const UI_PASS = "Ui-Test-Parola-2026";
+async function nodeLogin(base, user) {
+  const r = await fetch(base + "/api/auth/login", { method: "POST", headers: { "Content-Type": "application/json",
+    Origin: base }, body: JSON.stringify({ username: user, password: UI_PASS }) });
+  if (!r.ok) throw new Error(`node giriş ${r.status}`);
+  return r.headers.get("set-cookie").split(";")[0];
+}
+const ADMIN_COOKIE = await nodeLogin(FULL, "ui_admin");
+const api = async (base, path) => (await fetch(base + path, { headers: { cookie: ADMIN_COOKIE } })).json();
 const summary = await api(FULL, "/api/history/summary");
+async function uiLogin(user, pass = UI_PASS) {
+  await waitFor(`!document.getElementById("loginView").hidden`);
+  await ev(`const f = document.getElementById("loginForm"); f.elements.username.value = ${JSON.stringify(user)};
+    f.elements.password.value = ${JSON.stringify(pass)}; f.requestSubmit(); return true;`);
+}
+async function uiLogout() {
+  await ev(`document.getElementById("logout").click(); return true;`);
+  await waitFor(`!document.getElementById("loginView").hidden`);
+}
 
 // ================================================================ masaüstü
 await viewport(1400, 1000);
 await go(FULL + "/");
+await check("Oturumsuz: yalnız giriş ekranı, sekmeler ve veriler gizli", async () => {
+  await waitFor(`!document.getElementById("loginView").hidden`);
+  const s = await ev(`return { tabs: document.getElementById("appTabs").hidden, live: document.getElementById("view-live").hidden,
+    h: document.getElementById("view-history").hidden, imgs: document.querySelectorAll("#grid img").length };`);
+  assert(s.tabs && s.live && s.h && s.imgs === 0, JSON.stringify(s));
+  await shot("00_giris");
+});
+await check("Giriş: yanlış parola genel hata mesajı, parola alanı temizlenir", async () => {
+  await uiLogin("ui_admin", "yanlis-parola-xyz");
+  await waitFor(`document.getElementById("loginStatus").classList.contains("err")`);
+  const r = await ev(`return { msg: document.getElementById("loginStatus").textContent,
+    pw: document.getElementById("loginForm").elements.password.value };`);
+  assert(r.msg.includes("hatalı") && r.pw === "", JSON.stringify(r));
+});
+await uiLogin("ui_admin");
+await waitFor(`!document.getElementById("appTabs").hidden`);
 await check("Canlı İzleme: varsayılan sekme, diğer ekranlar gizli", async () => {
   const s = await ev(`return { sel: document.getElementById("tab-live").getAttribute("aria-selected"),
     live: !document.getElementById("view-live").hidden, h: document.getElementById("view-history").hidden,
@@ -102,7 +136,7 @@ await check("Canlı İzleme: varsayılan sekme, diğer ekranlar gizli", async ()
 });
 await check("Canlı İzleme: WebSocket ile gelen kare tarayıcıda görüntüleniyor (binary protokol)", async () => {
   const inc = (await api(FULL, "/api/history/incidents?status=closed&limit=200")).items.find(i => i.snapshot);
-  const jpg = new Uint8Array(await (await fetch(FULL + inc.snapshot)).arrayBuffer());
+  const jpg = new Uint8Array(await (await fetch(FULL + inc.snapshot, { headers: { cookie: ADMIN_COOKIE } })).arrayBuffer());
   // gerçek dedektör gibi akış: karo /api/state ile oluşana kadar gelen kareler atlanır, sonrakiler çizilir
   let shown = false;
   for (let i = 0; i < 15 && !shown; i++) {
@@ -265,10 +299,46 @@ await check("390px: detay penceresi ekrana sığıyor", async () => {
   assert(r.l >= 0 && r.r <= r.w, JSON.stringify(r));
 });
 
-// ================================================================ boş veri ve DB hatası
+// ================================================================ roller (FAZ 6)
 await viewport(1400, 1000);
+await go(`${FULL}/#history`);
+await check("Çıkış: giriş ekranına döner, API 401, önceki kullanıcının verisi DOM'da kalmaz", async () => {
+  await uiLogout();
+  const code = await ev(`return (await fetch("/api/history/incidents")).status;`);
+  const left = await ev(`return { rows: document.querySelectorAll("tbody tr").length, imgs: [...document.images]
+    .filter(i => i.getAttribute("src")).length, tiles: document.querySelectorAll("#grid .stage").length };`);
+  assert(code === 401 && left.rows === 0 && left.imgs === 0 && left.tiles === 0, JSON.stringify({ code, left }));
+});
+await check("Viewer: #live adresi bile istatistiğe düşer; görüntü ve canlı API'ler kapalı", async () => {
+  await ev(`history.replaceState(null, "", "/#live"); return true;`);
+  await uiLogin("ui_viewer");
+  await waitFor(`!document.getElementById("appTabs").hidden`);
+  await idle("sStatus");
+  const s = await ev(`return { liveTab: document.getElementById("tab-live").hidden, stats: !document.getElementById("view-stats").hidden,
+    user: document.getElementById("userName").textContent };`);
+  assert(s.liveTab && s.stats && s.user.includes("İzleyici"), JSON.stringify(s));
+  await ev(`document.getElementById("tab-history").click(); return true;`); await idle("hStatus");
+  const g = await ev(`return { restricted: [...document.querySelectorAll("#hTable td .why")].filter(x => x.textContent === "yetki gerekli").length,
+    thumbs: document.querySelectorAll("#hTable img.thumb").length };`);
+  const inc = (await api(FULL, "/api/history/incidents?status=closed&limit=200")).items.find(i => i.snapshot);
+  const codes = await ev(`return [await fetch(${JSON.stringify(inc.snapshot)}).then(r => r.status),
+    await fetch("/api/state").then(r => r.status), await fetch("/api/admin/users").then(r => r.status)];`);
+  await shot("13_viewer_gecmis");
+  assert(g.restricted >= 1 && g.thumbs === 0 && JSON.stringify(codes) === "[403,403,403]", JSON.stringify({ g, codes }));
+  return JSON.stringify(codes);
+});
+await check("Kamera kapsamı (yalnız cam1): geçmişte başka kamera görünmüyor", async () => {
+  await uiLogout(); await uiLogin("ui_cam1");
+  await waitFor(`!document.getElementById("appTabs").hidden`);
+  await ev(`document.getElementById("tab-history").click(); return true;`); await idle("hStatus");
+  const cams = await ev(`return [...new Set([...document.querySelectorAll("#hTable tbody tr td:nth-child(2) .why")].map(x => x.textContent.split(" ")[0]))];`);
+  assert(JSON.stringify(cams) === '["cam1"]', cams);
+  await uiLogout();
+});
+
+// ================================================================ boş veri ve DB hatası
 await check("Boş veritabanı: anlaşılır boş durum mesajları", async () => {
-  await go(`${EMPTY}/#history`); await idle("hStatus");
+  await go(`${EMPTY}/#history`); await uiLogin("ui_admin"); await idle("hStatus");
   const h = await text("#hStatus");
   await go(`${EMPTY}/#stats`); await idle("sStatus");
   const c = await text("#sChart");
@@ -278,16 +348,14 @@ await check("Boş veritabanı: anlaşılır boş durum mesajları", async () => 
   assert(h === "Bu filtrelere uyan ihlal kaydı yok." && c === "Bu aralıkta ihlal kaydı yok." &&
     r === "Bu filtrelere uyan run yok." && cams === "Henüz kayıtlı kamera yok.", JSON.stringify({ h, c, r, cams }));
 });
-await check("DB erişilemez (503): her ekranda hata mesajı, canlı sekme çalışıyor", async () => {
-  const msgs = [];
-  for (const [tab, id] of [["history", "hStatus"], ["stats", "sStatus"], ["runs", "rStatus"]]) {
-    await go(`${BAD}/#${tab}`); await idle(id);
-    msgs.push(await ev(`const s = document.getElementById("${id}"); return s.classList.contains("err") ? s.textContent : "";`));
-  }
+await check("DB erişilemez (503): giriş ekranında anlaşılır hata, veri gösterilmez", async () => {
+  await go(`${BAD}/#history`);
+  await waitFor(`document.getElementById("loginStatus").textContent.includes("Veritabanına")`);
+  await uiLogin("ui_admin");
+  await waitFor(`document.getElementById("loginStatus").classList.contains("err") &&
+    document.getElementById("loginStatus").textContent.includes("Veritabanına")`);
+  assert(await ev(`return document.getElementById("appTabs").hidden;`), "sekmeler göründü");
   await shot("12_db_503");
-  assert(msgs.every(m => m.includes("Veritabanına şu an ulaşılamıyor")), msgs);
-  await ev(`document.getElementById("tab-live").click(); return true;`);
-  await waitFor(`document.getElementById("connText").textContent.includes("Dedektör bağlı değil")`);
 });
 
 // ---------------------------------------------------------------- rapor

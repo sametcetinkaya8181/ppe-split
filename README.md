@@ -29,11 +29,15 @@ Proje klasöründe (`docker-compose.yml`'in olduğu yer) önce `.env` oluştur; 
 
 Bu komut PostgreSQL 17'yi (`db`) başlatır, veritabanı rollerini ayırır (`db-roles`: tablolar `ppe_migrator`'a ait, dashboard yalnız SELECT/INSERT/UPDATE yetkili `ppe_app` ile bağlanır), şemayı Alembic ile kurar (`migrate`) ve ardından dashboard'u açar. Kontrol: `docker compose ps` ve http://127.0.0.1:8000/health/ready (`"status":"ready"`).
 
-Tarayıcıda http://localhost:8000 aç. Bu aşamada "Dedektör bağlı değil" yazması normaldir. Dashboard varsayılan olarak yalnızca bu bilgisayardan erişilir; PostgreSQL portu dışarı açılmaz.
+**İlk yöneticiyi oluştur** (parola gizli sorulur; arayüze giriş için zorunlu):
+
+    docker compose exec dashboard python -m auth.cli create admin --role admin
+
+Tarayıcıda http://localhost:8000 aç ve giriş yap. Roller: `viewer` (istatistik ve görüntüsüz liste), `supervisor` (+ canlı yayın ve ihlal görüntüleri, atanan kameralar), `admin` (+ kullanıcı yönetimi ve denetim kaydı). Dashboard varsayılan olarak yalnızca bu bilgisayardan erişilir; PostgreSQL portu dışarı açılmaz. LAN erişimi yalnız TLS ters vekil ile ve ön koşullar sağlandıktan sonra: [docs/LAN_DEPLOYMENT.md](docs/LAN_DEPLOYMENT.md).
 
 Testler (gerçek PostgreSQL, ayrı `ppe_test` veritabanı): `docker compose --profile test run --rm tests`
 
-**Belgeler:** [Mimari](docs/ARCHITECTURE.md) · [Veritabanı ve roller](docs/DATABASE.md) · [Güvenlik](docs/SECURITY.md) · [Yedekleme/geri yükleme](docs/BACKUP_RESTORE.md) · [Kurulum/işletim](docs/DEPLOYMENT.md) · [Test raporu](docs/TEST_REPORT.md)
+**Belgeler:** [Mimari](docs/ARCHITECTURE.md) · [Veritabanı ve roller](docs/DATABASE.md) · [Güvenlik](docs/SECURITY.md) · [Yedekleme/geri yükleme](docs/BACKUP_RESTORE.md) · [Kurulum/işletim](docs/DEPLOYMENT.md) · [Test raporu](docs/TEST_REPORT.md) · [Tehdit modeli](docs/THREAT_MODEL.md) · [LAN dağıtımı](docs/LAN_DEPLOYMENT.md) · [KVKK hazırlık](docs/PRIVACY_READINESS.md) · [Lisans](docs/LICENSE_REVIEW.md) · [FAZ 6 raporu](docs/PHASE_6_REPORT.md)
 
 **Kamera kimliği:** Her kaynağa sabit bir kimlik verin: `VIDEO_SOURCES=[giris]Giriş kapısı=rtsp://...,[kule]videos/kule.mp4`. Kimlik kaynak sırası değişse de aynı kalır. Önek yoksa eski davranış (`cam1`, `cam2`… sıraya bağlı) kullanılır ve dedektör açılışta uyarır; `CAMERA_ID_MODE=source` ile kimlik kaynaktan türetilir. Geçmiş kayıtlar run'ın kendi kaynak etiketiyle gösterilir; FAZ 5 öncesi kayıtlar "Eski kayıt: kaynak doğrulanamadı" olarak görünür.
 
@@ -53,7 +57,7 @@ Dashboard sınırları (kök `.env` / compose ortamı): `MAX_FRAME_BYTES` (2 MiB
 | `GET /api/history/cameras` | Kayıtlı kameralar |
 | `GET /api/history/runs`, `GET /api/history/runs/{id}` | Run geçmişi (`camera_id`, `from`, `to`, `status`, sayfalama), kişi raporu ve ihlal sayıları |
 
-İhlal durumları: `closed` (bitiş olayı var), `active` (bitiş yok, run çalışıyor ve hem run'dan hem ihlalden son `ACTIVE_WINDOW_SEC` (varsayılan 90 sn) içinde kayıt geldi), `stale` / `run_end` (bitiş yok, run raporu bu nedenle kapattığını bildirdi), `orphan` (başlangıç olayı yok), `unknown` (kesin değil; `status_reason` nedenini verir: canlılık sinyali yok, rapor listesi taşmış, raporda yok vb.). Bitiş olayı olmayan ihlal yalnızca canlılık kanıtı varsa `active` sayılır. Geçmiş uçları da canlı uçlar gibi kimlik doğrulamasızdır; dashboard'u `127.0.0.1` dışına açmayın.
+İhlal durumları: `closed` (bitiş olayı var), `active` (bitiş yok, run çalışıyor ve hem run'dan hem ihlalden son `ACTIVE_WINDOW_SEC` (varsayılan 90 sn) içinde kayıt geldi), `stale` / `run_end` (bitiş yok, run raporu bu nedenle kapattığını bildirdi), `orphan` (başlangıç olayı yok), `unknown` (kesin değil; `status_reason` nedenini verir: canlılık sinyali yok, rapor listesi taşmış, raporda yok vb.). Bitiş olayı olmayan ihlal yalnızca canlılık kanıtı varsa `active` sayılır. Tüm geçmiş ve canlı uçlar oturum ve rol gerektirir (uç matrisi: docs/SECURITY.md).
 
 **INGEST_TOKEN:** Boşsa ingest uçları kimlik doğrulamasızdır (dashboard yalnızca `127.0.0.1`'e bağlıyken kabul edilebilir). Doluysa kök `.env` ve `detector/.env` içinde **aynı** olmalıdır; uyuşmazsa dashboard `401` döner ve dedektör o olayları **düşürür** (log'da `INGEST_TOKEN` uyarısı görünür).
 

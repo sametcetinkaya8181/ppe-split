@@ -3,7 +3,11 @@ name: ppe-split
 
 services:
   db:
-    image: postgres:17
+    # postgres:17 (17.11) digest ile sabit; güncelleme bilinçli yapılır (docs/SECURITY.md "Bağımlılıklar").
+    image: postgres:17@sha256:b8faeff7712663c2773a190181e1246e37e364b887611c04658c28b44e2408fe
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 2g
+    pids_limit: 512
     environment:
       POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB eksik - kökteki .env.example dosyasını .env olarak kopyalayın}
       POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER eksik - kökteki .env dosyasını kontrol edin}
@@ -24,6 +28,9 @@ services:
     build: ./dashboard
     image: ppe-dashboard
     command: ["python", "-m", "db.roles", "setup"]
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
     environment:
       ADMIN_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
       PPE_APP_PASSWORD: ${PPE_APP_PASSWORD:-}
@@ -38,6 +45,9 @@ services:
     build: ./dashboard
     image: ppe-dashboard
     command: ["sh", "-c", "alembic upgrade head && python -m db.roles grants"]
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
     environment:
       DATABASE_URL: ${MIGRATE_DATABASE_URL:-${DATABASE_URL:?DATABASE_URL eksik - kökteki .env dosyasını kontrol edin}}
     depends_on:
@@ -51,15 +61,35 @@ services:
     build: ./dashboard
     image: ppe-dashboard
     ports:
+      # Varsayılan yalnız bu bilgisayar. LAN için bunu DEĞİŞTİRMEYİN: docs/LAN_DEPLOYMENT.md (TLS ters vekil).
       - "${DASHBOARD_BIND:-127.0.0.1}:8000:8000"
     volumes:
       - ./data:/data
+    # Sertleştirme: ayrıcalıksız kullanıcı (Dockerfile), salt okunur kök dosya sistemi (yazma yalnız /data, /tmp),
+    # tüm Linux yetenekleri düşürülür, ayrıcalık yükseltme kapalı, kaynak sınırları.
+    read_only: true
+    tmpfs: ["/tmp:size=64m"]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 1g
+    cpus: 2
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     environment:
       DATA_DIR: /data
       # Rol ayrımı kuruluysa ppe_app (SELECT/INSERT/UPDATE); eski kurulumda POSTGRES_USER.
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL eksik - kökteki .env dosyasını kontrol edin}
       INGEST_TOKEN: ${INGEST_TOKEN:-}     # doluysa dedektörde de aynı INGEST_TOKEN verilmeli
+      INGEST_TOKEN_NEXT: ${INGEST_TOKEN_NEXT:-}   # yalnız token rotasyonu sırasında (docs/SECURITY.md)
       ACTIVE_WINDOW_SEC: ${ACTIVE_WINDOW_SEC:-90}
+      SECURITY_PROFILE: ${SECURITY_PROFILE:-local}
+      SESSION_IDLE_MINUTES: ${SESSION_IDLE_MINUTES:-30}
+      SESSION_MAX_HOURS: ${SESSION_MAX_HOURS:-12}
     depends_on:
       db:
         condition: service_healthy
@@ -72,6 +102,7 @@ services:
     profiles: ["test"]
     build: ./dashboard
     image: ppe-dashboard
+    user: root                           # yalnız geliştirici testleri: test bağımlılıklarını kurar
     working_dir: /app
     command: ["sh", "-c", "pip install -q --root-user-action=ignore --disable-pip-version-check -r requirements-dev.txt && pytest -q -p no:cacheprovider"]
     volumes:
@@ -79,6 +110,8 @@ services:
     environment:
       PYTHONDONTWRITEBYTECODE: "1"
       DATA_DIR: /tmp/ppe-test-data
+      ALLOWED_HOSTS: 127.0.0.1,localhost,::1,testserver
+      PASSWORD_HASH_PROFILE: test         # hızlı Argon2id parametreleri; yalnız local profilde izinli
       # Ayrı test veritabanı; ana DB'ye (POSTGRES_DB) dokunulmaz.
       TEST_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/ppe_test
     depends_on:

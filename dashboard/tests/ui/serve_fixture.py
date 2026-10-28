@@ -89,6 +89,18 @@ def seed(url, data_dir):
         c.execute(text("UPDATE cameras SET name = 'Bugün başka video' WHERE id = 'cam3'"))
     eng.dispose()
     app_module.flush_heartbeats()
+    make_users(url, (("ui_admin", "admin", None), ("ui_viewer", "viewer", None), ("ui_cam1", "supervisor", ["cam1"])))
+
+
+UI_PASSWORD = "Ui-Test-Parola-2026"      # yalnız izole UI test veritabanları
+
+
+def make_users(url, users):
+    from auth import store
+    from db.session import get_session
+    with get_session(url) as s, s.begin():
+        for name, role, cams in users:
+            store.create_user(s, name, UI_PASSWORD, role, cams)
 
 
 def main():
@@ -99,7 +111,8 @@ def main():
     for d in (full_dir, empty_dir, bad_dir):
         os.makedirs(f"{d}/snapshots", exist_ok=True)
     seed(full, full_dir)
-    bad = "postgresql+psycopg://u:p@olmayan-db:5432/x"
+    make_users(empty, (("ui_admin", "admin", None),))
+    bad ="postgresql+psycopg://u:p@olmayan-db:5432/x"
     procs = []
     for port, url, d in ((8001, full, full_dir), (8002, bad, bad_dir), (8003, empty, empty_dir)):
         env = dict(os.environ, DATABASE_URL=url, DATA_DIR=d, ACTIVE_WINDOW_SEC="3600")

@@ -23,7 +23,12 @@ def test_ready_200_at_head(client, db_url, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", db_url)
     r = client.get("/health/ready")
     assert r.status_code == 200
-    assert r.json() == {"status": "ready", "db": "ok", "schema": "current", "revision": ["0003"]}
+    assert r.json() == {"status": "ready"}                       # FAZ 6: anonim çağrı ayrıntı almaz
+
+
+def test_ready_details_only_for_admin(api):
+    assert api.get("/health/ready").json() == {"status": "ready", "db": "ok", "schema": "current",
+                                               "revision": ["0004"]}
 
 
 def test_ready_503_when_schema_outdated(client, db_url, monkeypatch):
@@ -32,7 +37,7 @@ def test_ready_503_when_schema_outdated(client, db_url, monkeypatch):
     try:
         r = client.get("/health/ready")
         assert r.status_code == 503
-        assert r.json() == {"status": "not_ready", "db": "ok", "schema": "outdated", "current": [], "expected": ["0003"]}
+        assert r.json() == {"status": "not_ready"}
     finally:
         command.upgrade(alembic_cfg(), "head")
     assert client.get("/health/ready").status_code == 200
@@ -42,7 +47,7 @@ def test_ready_503_when_db_unreachable_without_leaking_secrets(client, monkeypat
     monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://gizli_kullanici:COK_GIZLI_PAROLA@olmayan-sunucu:5432/ppe")
     r = client.get("/health/ready")
     assert r.status_code == 503
-    assert r.json() == {"status": "not_ready", "db": "unreachable"}
+    assert r.json() == {"status": "not_ready"}
     for secret in ("COK_GIZLI_PAROLA", "gizli_kullanici", "olmayan-sunucu", "postgresql"):
         assert secret not in r.text
 
@@ -54,7 +59,7 @@ def test_ready_503_when_misconfigured(client, monkeypatch, value):
     else:
         monkeypatch.setenv("DATABASE_URL", value)
     r = client.get("/health/ready")
-    assert r.status_code == 503 and r.json() == {"status": "not_ready", "db": "misconfigured"}
+    assert r.status_code == 503 and r.json() == {"status": "not_ready"}
 
 
 # ---------------------------------------------------------------- mevcut davranış (regresyon)
@@ -63,7 +68,7 @@ def test_existing_endpoints_unchanged(api, engine):
     import uuid
     from tests.helpers import FRAME, event, frame_payload, post_frame, report
     client = api
-    assert client.get("/healthz").json() == {"cameras": 0, "running": 0}
+    assert client.get("/healthz").json() == {"status": "ok"}       # FAZ 6: anonim canlılık yalnız durum
     assert client.get("/").status_code == 200 and "Saha KKD" in client.get("/").text
 
     run = uuid.uuid4()
