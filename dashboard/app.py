@@ -15,6 +15,8 @@ from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile, WebS
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from db.health import check_ready
+
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
 INGEST_TOKEN = os.getenv("INGEST_TOKEN", "")
 STALE_AFTER = float(os.getenv("STALE_AFTER", 5))
@@ -202,3 +204,10 @@ def health():
     with LOCK:
         cams = list(CAMS.values())
     return {"cameras": len(cams), "running": sum(_meta(c)["status"] == "running" for c in cams)}
+
+
+@app.get("/health/ready")
+def health_ready():
+    """DB erişimi + beklenen Alembic revision. /healthz'den bağımsızdır (canlılık değil hazır olma)."""
+    ok, detail = check_ready()
+    return JSONResponse(detail, status_code=200 if ok else 503)

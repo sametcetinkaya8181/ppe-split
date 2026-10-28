@@ -21,12 +21,17 @@ ppe-split/
 
 ## A) İLK KURULUM (yalnızca bir kez)
 
-### 1. Dashboard'u başlat
-Proje klasöründe (`docker-compose.yml`'in olduğu yer):
+### 1. Dashboard'u ve veritabanını başlat
+Proje klasöründe (`docker-compose.yml`'in olduğu yer) önce `.env` oluştur ve `POSTGRES_PASSWORD` değerini güçlü bir parolayla değiştir (`.env` Git'e eklenmez):
 
+    Copy-Item .env.example .env        # Mac/Linux: cp .env.example .env
     docker compose up -d --build
 
-Tarayıcıda http://localhost:8000 aç. Bu aşamada "Dedektör bağlı değil" yazması normaldir.
+Bu komut PostgreSQL 17'yi (`db`) başlatır, şemayı Alembic ile kurar (`migrate`, tek seferlik) ve ardından dashboard'u açar. Kontrol: `docker compose ps` ve http://127.0.0.1:8000/health/ready (`"status":"ready"`).
+
+Tarayıcıda http://localhost:8000 aç. Bu aşamada "Dedektör bağlı değil" yazması normaldir. Dashboard varsayılan olarak yalnızca bu bilgisayardan erişilir; PostgreSQL portu dışarı açılmaz.
+
+Testler (gerçek PostgreSQL, ayrı `ppe_test` veritabanı): `docker compose --profile test run --rm tests`
 
 ### 2. Dedektörün ortamını kur
 **Mac / Linux:**

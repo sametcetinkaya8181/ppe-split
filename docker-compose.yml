@@ -1,12 +1,71 @@
+# Proje adı sabit: klasör adı değişse de volume/container adları değişmez (ppe-split_pgdata).
+name: ppe-split
+
 services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB eksik - kökteki .env.example dosyasını .env olarak kopyalayın}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER eksik - kökteki .env dosyasını kontrol edin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD eksik - kökteki .env dosyasını kontrol edin}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Port host'a AÇILMAZ; yalnızca compose ağı içinden (db:5432) erişilir.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  # Tek seferlik: şemayı Alembic ile head'e getirir, sonra çıkar.
+  migrate:
+    build: ./dashboard
+    image: ppe-dashboard
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL eksik - kökteki .env dosyasını kontrol edin}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
   dashboard:
     build: ./dashboard
     image: ppe-dashboard
     ports:
-      - "8000:8000"
+      - "${DASHBOARD_BIND:-127.0.0.1}:8000:8000"
     volumes:
       - ./data:/data
     environment:
       DATA_DIR: /data
-      INGEST_TOKEN: ""        # doluysa dedektörde de aynı INGEST_TOKEN verilmeli
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL eksik - kökteki .env dosyasını kontrol edin}
+      INGEST_TOKEN: ${INGEST_TOKEN:-}     # doluysa dedektörde de aynı INGEST_TOKEN verilmeli
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
+
+  # Yalnızca testler: docker compose --profile test run --rm tests
+  tests:
+    profiles: ["test"]
+    build: ./dashboard
+    image: ppe-dashboard
+    working_dir: /app
+    command: ["sh", "-c", "pip install -q --root-user-action=ignore --disable-pip-version-check -r requirements-dev.txt && pytest -q -p no:cacheprovider"]
+    volumes:
+      - ./dashboard:/app
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      DATA_DIR: /tmp/ppe-test-data
+      # Ayrı test veritabanı; ana DB'ye (POSTGRES_DB) dokunulmaz.
+      TEST_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/ppe_test
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
