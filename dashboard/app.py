@@ -9,15 +9,17 @@ import re
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile, WebSocket
+from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, WebSocket
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.exc import DBAPIError, IntegrityError, SQLAlchemyError
 
+from db import history
 from db import repository as repo
 from db.health import check_ready
 from db.session import get_session
@@ -425,3 +427,210 @@ def health_ready():
     """DB erişimi + beklenen Alembic revision. /healthz'den bağımsızdır (canlılık değil hazır olma)."""
     ok, detail = check_ready()
     return JSONResponse(detail, status_code=200 if ok else 503)
+
+
+# ---------------- geçmiş (PostgreSQL, salt okuma) ----------------
+# Durum/sayım tanımları: db/history.py. Bu uçlar canlı RAM durumunu (CAMS/ALERTS) kullanmaz ve değiştirmez.
+ACTIVE_WINDOW_SEC = float(os.getenv("ACTIVE_WINDOW_SEC", max(3 * HEARTBEAT_SEC, 60)))
+RUN_STATUSES = ("running", "finished", "error", "interrupted")
+_SNAP_URL = re.compile(r"^snapshots/alert_[0-9a-f-]{36}\.jpg$")
+CameraQ = Query(None, pattern=schemas.CAMERA_ID, max_length=40)
+TzQ = Query("UTC", max_length=64, pattern=r"^[A-Za-z0-9_+\-/]+$")
+
+
+def _bad(loc, msg, typ="value_error"):
+    _http_error(422, [{"loc": ["query", loc], "msg": msg, "type": typ}])
+
+
+def _utc_param(value: Optional[str], loc: str) -> Optional[datetime]:
+    """ISO 8601, saat dilimi ZORUNLU (Z veya +03:00); UTC'ye çevrilir. Saat dilimsiz değer belirsizdir -> 422."""
+    if value is None or value == "":
+        return None
+    try:
+        dt = datetime.fromisoformat(value) if len(value) <= 40 else None
+    except ValueError:
+        dt = None
+    if dt is None:
+        _bad(loc, "ISO 8601 tarih/saat olmalı (ör. 2026-10-28T00:00:00Z)", "datetime_parsing")
+    if dt.utcoffset() is None:
+        _bad(loc, "saat dilimi belirtilmeli (ör. Z veya +03:00)", "timezone_aware")
+    return dt.astimezone(timezone.utc)
+
+
+def _range_params(date_from, date_to):
+    f, t = _utc_param(date_from, "from"), _utc_param(date_to, "to")
+    if f is not None and t is not None and f >= t:
+        _bad("to", "to, from'dan büyük olmalı")
+    return f, t
+
+
+def _enum_list(values, allowed, loc) -> tuple:
+    for v in values:
+        if v not in allowed:
+            _bad(loc, f"geçersiz değer; izin verilenler: {', '.join(allowed)}", "enum")
+    return tuple(dict.fromkeys(values))
+
+
+def _iso(dt: Optional[datetime]) -> Optional[str]:
+    return None if dt is None else dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _num(v):
+    return None if v is None else float(v)
+
+
+def _missing_text(helmet: bool, vest: bool) -> str:
+    return " + ".join(x for x, f in ((schemas.HELMET_TEXT, helmet), (schemas.VEST_TEXT, vest)) if f)
+
+
+def _snapshot(path: Optional[str]) -> dict:
+    """Yalnızca DB'deki doğrulanmış biçimdeki ve diskte gerçekten bulunan dosya için URL verir."""
+    if not path:
+        return {"snapshot": None, "snapshot_missing": False}
+    if not _SNAP_URL.match(path) or not (SNAP_DIR / path.split("/", 1)[1]).is_file():
+        return {"snapshot": None, "snapshot_missing": True}
+    return {"snapshot": "/" + path, "snapshot_missing": False}
+
+
+def _report_summary(md: Optional[dict]) -> Optional[dict]:
+    if not isinstance(md, dict):
+        return None
+    unclosed = md.get("unclosed_incidents") if isinstance(md.get("unclosed_incidents"), list) else []
+    by_reason: dict = {}
+    for u in unclosed:
+        r = u.get("reason") if isinstance(u, dict) else None
+        by_reason[str(r)] = by_reason.get(str(r), 0) + 1
+    err = md.get("error")
+    return {"unclosed_by_reason": by_reason, "unclosed_overflow": md.get("unclosed_overflow", 0),
+            "orphan_events": md.get("orphan_events", 0), "video_time_sec": md.get("video_time_sec"),
+            "error": redact_text(err)[:300] if err else None}
+
+
+def _incident_out(r: dict) -> dict:
+    return {"incident_id": str(r["incident_id"]), "camera_id": r["camera_id"], "camera_name": r["camera_name"],
+            "run_id": str(r["run_id"]), "track_id": r["pid"],
+            "status": r["status"], "status_reason": r["status_reason"], "verified": r["verified"],
+            "started_at": _iso(r["started_at"]), "ended_at": _iso(r["ended_at"]),
+            "last_event_at": _iso(r["last_event_at"]),
+            "duration_sec": (round((r["ended_at"] - r["started_at"]).total_seconds(), 1)
+                             if r["ended_at"] is not None else None),
+            "video_first_sec": _num(r["video_first_sec"]), "video_last_sec": _num(r["video_last_sec"]),
+            "missing_helmet": r["missing_helmet"], "missing_vest": r["missing_vest"],
+            "missing": _missing_text(r["missing_helmet"], r["missing_vest"]),
+            "missing_at_start": _missing_text(r["start_missing_helmet"], r["start_missing_vest"]),
+            "event_count": r["event_count"], "ongoing_count": r["ongoing_count"],
+            **_snapshot(r["snapshot_path"])}
+
+
+def _run_out(r: dict) -> dict:
+    return {"run_id": str(r["run_id"]), "camera_id": r["camera_id"], "camera_name": r["camera_name"],
+            "loop_no": r["loop_no"], "status": r["status"], "liveness": r["liveness"],
+            "started_at": _iso(r["started_at"]), "finished_at": _iso(r["finished_at"]),
+            "last_seen_at": _iso(r["last_seen_at"]), "fps": _num(r["fps"]), "width": r["width"],
+            "height": r["height"], "person_count": r["person_count"],
+            "persons_with_violation": r["persons_with_violation"], "incident_count": r["incident_count"],
+            "verified_incidents": r["verified_incidents"], "event_count": r["event_count"],
+            "report": _report_summary(r["report_metadata"])}
+
+
+def _read(fn, *args, **kwargs):
+    """Salt-okunur DB çağrısı; DB hatası -> 503 (adres/parola mesaja girmez)."""
+    try:
+        with get_session() as s:
+            return fn(s, *args, **kwargs)
+    except history.BadCursor:
+        _bad("cursor", "geçersiz cursor")
+    except (SQLAlchemyError, RuntimeError) as exc:
+        _rlog("db_read", f"UYARI: geçmiş sorgusu başarısız ({type(exc).__name__}); 503 dönülüyor.")
+        _http_error(503, "veritabanı şu an kullanılamıyor; tekrar deneyin")
+
+
+def _check_tz(tz: str):
+    if tz != "UTC" and not _read(history.valid_timezone, tz):
+        _bad("tz", "bilinmeyen saat dilimi (ör. UTC, Europe/Istanbul)")
+
+
+@app.get("/api/history/incidents")
+def history_incidents(camera_id: Optional[str] = CameraQ, run_id: Optional[uuid.UUID] = None,
+                      date_from: Optional[str] = Query(None, alias="from"),
+                      date_to: Optional[str] = Query(None, alias="to"),
+                      status: list[str] = Query([]), equipment: Optional[str] = None,
+                      limit: int = Query(50, ge=1, le=200), cursor: Optional[str] = Query(None, max_length=200)):
+    f, t = _range_params(date_from, date_to)
+    statuses = _enum_list(status, history.STATUSES, "status")
+    if equipment is not None:
+        _enum_list([equipment], history.EQUIPMENT, "equipment")
+    res = _read(history.list_incidents, camera_id=camera_id, run_id=run_id, date_from=f, date_to=t,
+                statuses=statuses, equipment=equipment, limit=limit, cursor=cursor,
+                active_window=ACTIVE_WINDOW_SEC)
+    return {"items": [_incident_out(r) for r in res["items"]], "total": res["total"],
+            "next_cursor": res["next_cursor"], "limit": limit}
+
+
+@app.get("/api/history/incidents/{incident_id}")
+def history_incident(incident_id: uuid.UUID):
+    r = _read(history.get_incident, incident_id, active_window=ACTIVE_WINDOW_SEC)
+    if r is None:
+        raise HTTPException(status_code=404, detail="incident bulunamadı")
+    md = r["report_metadata"] if isinstance(r["report_metadata"], dict) else {}
+    unclosed = next((u for u in md.get("unclosed_incidents") or []
+                     if isinstance(u, dict) and u.get("incident_id") == str(r["incident_id"])), None)
+    return {**_incident_out(r),
+            "camera": {"id": r["camera_id"], "name": r["camera_name"]},
+            "run": {"id": str(r["run_id"]), "status": r["run_status"], "loop_no": r["loop_no"],
+                    "started_at": _iso(r["run_started_at"]), "finished_at": _iso(r["run_finished_at"]),
+                    "last_seen_at": _iso(r["run_last_seen_at"])},
+            "unclosed": ({"reason": unclosed.get("reason"), "video_time_sec": unclosed.get("t")}
+                         if unclosed else None),
+            "timeline": [{"event_id": str(e["event_id"]), "type": e["event_type"],
+                          "occurred_at": _iso(e["occurred_at"]), "ingested_at": _iso(e["ingested_at"]),
+                          "video_time_sec": _num(e["video_time_sec"]),
+                          "missing": _missing_text(e["missing_helmet"], e["missing_vest"]),
+                          "helmet_rate": e["helmet_rate"], "vest_rate": e["vest_rate"], "box": e["box"],
+                          **_snapshot(e["snapshot_path"])} for e in r["timeline"]],
+            "timeline_truncated": r["timeline_truncated"]}
+
+
+@app.get("/api/history/summary")
+def history_summary(camera_id: Optional[str] = CameraQ, run_id: Optional[uuid.UUID] = None,
+                    date_from: Optional[str] = Query(None, alias="from"),
+                    date_to: Optional[str] = Query(None, alias="to"), tz: str = TzQ):
+    f, t = _range_params(date_from, date_to)
+    _check_tz(tz)
+    res = _read(history.summary, camera_id=camera_id, run_id=run_id, date_from=f, date_to=t, tz=tz,
+                active_window=ACTIVE_WINDOW_SEC)
+    return {**res, "filters": {"camera_id": camera_id, "run_id": str(run_id) if run_id else None,
+                               "from": _iso(f), "to": _iso(t), "tz": tz}}
+
+
+@app.get("/api/history/cameras")
+def history_cameras():
+    return [{"id": c["id"], "name": c["name"], "source_kind": c["source_kind"], "created_at": _iso(c["created_at"]),
+             "last_seen_at": _iso(c["last_seen_at"]), "run_count": c["run_count"],
+             "last_run_started_at": _iso(c["last_run_started_at"]), "live_runs": c["live_runs"],
+             "incident_count": c["incident_count"], "event_count": c["event_count"]}
+            for c in _read(history.list_cameras, active_window=ACTIVE_WINDOW_SEC)]
+
+
+@app.get("/api/history/runs")
+def history_runs(camera_id: Optional[str] = CameraQ, date_from: Optional[str] = Query(None, alias="from"),
+                 date_to: Optional[str] = Query(None, alias="to"), status: list[str] = Query([]),
+                 limit: int = Query(50, ge=1, le=200), cursor: Optional[str] = Query(None, max_length=200)):
+    f, t = _range_params(date_from, date_to)
+    statuses = _enum_list(status, RUN_STATUSES, "status")
+    res = _read(history.list_runs, camera_id=camera_id, date_from=f, date_to=t, statuses=statuses, limit=limit,
+                cursor=cursor, active_window=ACTIVE_WINDOW_SEC)
+    return {"items": [_run_out(r) for r in res["items"]], "total": res["total"],
+            "next_cursor": res["next_cursor"], "limit": limit}
+
+
+@app.get("/api/history/runs/{run_id}")
+def history_run(run_id: uuid.UUID):
+    r = _read(history.get_run, run_id, active_window=ACTIVE_WINDOW_SEC)
+    if r is None:
+        raise HTTPException(status_code=404, detail="run bulunamadı")
+    return {**_run_out(r), "incidents_by_status": r["incidents_by_status"],
+            "persons": [{"track_id": p["pid"], "first_sec": _num(p["first_sec"]), "last_sec": _num(p["last_sec"]),
+                         "observations": p["observations"], "helmet_rate": p["helmet_rate"],
+                         "vest_rate": p["vest_rate"], "ever_violation": p["ever_violation"],
+                         "updated_at": _iso(p["updated_at"])} for p in r["persons"]]}

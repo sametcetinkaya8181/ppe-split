@@ -37,6 +37,18 @@ Testler (gerçek PostgreSQL, ayrı `ppe_test` veritabanı): `docker compose --pr
 
 Dashboard sınırları (kök `.env` / compose ortamı): `MAX_FRAME_BYTES` (2 MiB), `MAX_SNAPSHOT_BYTES` (1 MiB), `MAX_EVENTS_PER_REQUEST` (200), `MAX_REPORT_BYTES` (1 MiB), `MAX_REPORT_ROWS` (5000), `HEARTBEAT_SEC` (30). Olay payload'ı form alanı olarak Starlette tarafından 1 MiB ile sınırlıdır.
 
+**Geçmiş ve istatistik (PostgreSQL'den):** Dashboard'da *İhlal Geçmişi*, *İstatistikler* ve *Kamera / Run Raporları* sekmeleri. Her satır bir **ihlaldir** (incident: aynı `incident_id`'li başlangıç → sürüyor → bitiş olayları); ham olay sayısı ayrıca gösterilir, "sürüyor" tekrarları ihlal sayısını artırmaz. İz ID, run içindeki ByteTrack numarasıdır; kişi kimliği değildir. API (salt okuma, JSON):
+
+| Uç | Açıklama |
+|---|---|
+| `GET /api/history/incidents` | `camera_id`, `run_id`, `from`, `to` (ISO 8601, saat dilimi zorunlu; `from` dahil, `to` hariç; ihlalin başladığı ana göre), `status` (tekrarlanabilir), `equipment` (`helmet`, `vest`, `both`, `helmet_only`, `vest_only`), `limit` (1–200), `cursor` (`next_cursor` değeri) |
+| `GET /api/history/incidents/{id}` | Ayrıntı + olay zaman çizelgesi, kamera, run, snapshot, rapordaki kapanış nedeni |
+| `GET /api/history/summary` | Doğrulanmış ihlal (başlangıç olayı olan), baret/yelek/ikisi, durum dağılımı, kamera dağılımı, günlük trend (`tz`, ör. `Europe/Istanbul`), ham olay sayıları |
+| `GET /api/history/cameras` | Kayıtlı kameralar |
+| `GET /api/history/runs`, `GET /api/history/runs/{id}` | Run geçmişi (`camera_id`, `from`, `to`, `status`, sayfalama), kişi raporu ve ihlal sayıları |
+
+İhlal durumları: `closed` (bitiş olayı var), `active` (bitiş yok, run çalışıyor ve hem run'dan hem ihlalden son `ACTIVE_WINDOW_SEC` (varsayılan 90 sn) içinde kayıt geldi), `stale` / `run_end` (bitiş yok, run raporu bu nedenle kapattığını bildirdi), `orphan` (başlangıç olayı yok), `unknown` (kesin değil; `status_reason` nedenini verir: canlılık sinyali yok, rapor listesi taşmış, raporda yok vb.). Bitiş olayı olmayan ihlal yalnızca canlılık kanıtı varsa `active` sayılır. Geçmiş uçları da canlı uçlar gibi kimlik doğrulamasızdır; dashboard'u `127.0.0.1` dışına açmayın.
+
 **INGEST_TOKEN:** Boşsa ingest uçları kimlik doğrulamasızdır (dashboard yalnızca `127.0.0.1`'e bağlıyken kabul edilebilir). Doluysa kök `.env` ve `detector/.env` içinde **aynı** olmalıdır; uyuşmazsa dashboard `401` döner ve dedektör o olayları **düşürür** (log'da `INGEST_TOKEN` uyarısı görünür).
 
 ### 2. Dedektörün ortamını kur
