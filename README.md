@@ -33,6 +33,12 @@ Tarayıcıda http://localhost:8000 aç. Bu aşamada "Dedektör bağlı değil" y
 
 Testler (gerçek PostgreSQL, ayrı `ppe_test` veritabanı): `docker compose --profile test run --rm tests`
 
+**Kalıcı kayıt:** İhlal olayları (`violation_events`), ihlal yaşam döngüleri (`incidents`), çalışmalar (`detector_runs`) ve kişi raporları (`person_run_reports`) PostgreSQL'e yazılır; snapshot JPEG'leri `data/snapshots/alert_<event_id>.jpg` dosyasındadır (DB'de yalnızca göreli yol). Dashboard yalnızca kayıt başarıyla commit edildikten sonra `200` döner; DB erişilemezse olaylı istekler `503` alır ve dedektör aynı olay kimlikleriyle tekrar dener. Canlı görüntü DB'den bağımsızdır. Kimliği olmayan (eski sürüm dedektör) olaylar `422` ile reddedilir.
+
+Dashboard sınırları (kök `.env` / compose ortamı): `MAX_FRAME_BYTES` (2 MiB), `MAX_SNAPSHOT_BYTES` (1 MiB), `MAX_EVENTS_PER_REQUEST` (200), `MAX_REPORT_BYTES` (1 MiB), `MAX_REPORT_ROWS` (5000), `HEARTBEAT_SEC` (30). Olay payload'ı form alanı olarak Starlette tarafından 1 MiB ile sınırlıdır.
+
+**INGEST_TOKEN:** Boşsa ingest uçları kimlik doğrulamasızdır (dashboard yalnızca `127.0.0.1`'e bağlıyken kabul edilebilir). Doluysa kök `.env` ve `detector/.env` içinde **aynı** olmalıdır; uyuşmazsa dashboard `401` döner ve dedektör o olayları **düşürür** (log'da `INGEST_TOKEN` uyarısı görünür).
+
 ### 2. Dedektörün ortamını kur
 **Mac / Linux:**
 

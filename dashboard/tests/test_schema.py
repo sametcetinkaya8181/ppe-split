@@ -8,7 +8,8 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import ProgrammingError
 
 from db import PersonRunReport
-from tests.conftest import CHECK, EVENT_SQL, FK, NOT_NULL, UNIQUE, event, seed, violates
+from tests.conftest import (CHECK, EVENT_INSERT, EVENT_SQL, FK, INCIDENT_CTE, NOT_NULL, UNIQUE, event, seed,
+                            violates)
 
 
 # ---------------------------------------------------------------- event_id idempotency
@@ -31,7 +32,7 @@ def test_event_id_on_conflict_do_nothing(conn):
 
 def test_id_is_server_generated(conn):
     r = seed(conn)
-    sql = EVENT_SQL.replace("(event_id,", "(id, event_id,", 1).replace("VALUES (", "VALUES (99, ", 1)
+    sql = INCIDENT_CTE + EVENT_INSERT.replace("(event_id,", "(id, event_id,", 1).replace("VALUES (", "VALUES (99, ", 1)
     with pytest.raises(ProgrammingError) as ei:                   # GENERATED ALWAYS: elle id verilemez
         with conn.begin_nested():
             conn.execute(text(sql), event(r["r1"]))
@@ -206,7 +207,7 @@ def test_report_unknown_run_rejected(conn):
 def test_all_timestamps_are_timestamptz(conn):
     rows = conn.execute(text("SELECT table_name, column_name, data_type FROM information_schema.columns "
                              "WHERE table_schema = 'public' AND column_name LIKE '%\\_at' ESCAPE '\\'")).all()
-    assert len(rows) == 8
+    assert len(rows) == 9
     assert {r.data_type for r in rows} == {"timestamp with time zone"}, rows
 
 

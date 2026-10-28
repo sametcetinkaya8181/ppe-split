@@ -70,6 +70,8 @@ class DetectorRun(Base):
         CheckConstraint("fps IS NULL OR fps > 0", name="fps_positive"),
         CheckConstraint("(width IS NULL OR width > 0) AND (height IS NULL OR height > 0)", name="size_positive"),
         Index("ix_detector_runs_camera_started", "camera_id", text("started_at DESC")),
+        CheckConstraint("report_metadata IS NULL OR (jsonb_typeof(report_metadata) = 'object'"
+                        " AND octet_length(report_metadata::text) <= 262144)", name="report_metadata_object"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
@@ -82,6 +84,28 @@ class DetectorRun(Base):
     fps: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
     width: Mapped[int | None] = mapped_column(Integer)
     height: Mapped[int | None] = mapped_column(Integer)
+    # Rapor özeti (allowlist): unclosed_incidents, unclosed_overflow, orphan_events, error, video_time_sec
+    report_metadata: Mapped[dict | None] = mapped_column(JSONB)
+
+
+class Incident(Base):
+    """Bir ihlal yaşam döngüsü kimliği tek bir (run, kamera, pid) üçlüsüne aittir. violation_events bu satıra
+    bileşik FK ile bağlanır; böylece aynı incident_id'nin başka run/kamera/pid ile kullanılması (eşzamanlı
+    istekler dahil) veritabanı düzeyinde imkânsızdır. Orphan olaylar da kendi incident satırını alır."""
+    __tablename__ = "incidents"
+    __table_args__ = (
+        UniqueConstraint("id", "run_id", "camera_id", "pid"),
+        ForeignKeyConstraint(["run_id", "camera_id"], ["detector_runs.id", "detector_runs.camera_id"],
+                             ondelete="RESTRICT", name="fk_incidents_run_id_camera_id_detector_runs"),
+        CheckConstraint("pid >= 0", name="pid_non_negative"),
+        Index("ix_incidents_run_pid", "run_id", "pid"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    camera_id: Mapped[str] = mapped_column(String(40))
+    pid: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(TZ, server_default=func.now())
 
 
 class ViolationEvent(Base):
@@ -90,6 +114,9 @@ class ViolationEvent(Base):
     __table_args__ = (
         ForeignKeyConstraint(["run_id", "camera_id"], ["detector_runs.id", "detector_runs.camera_id"],
                              ondelete="RESTRICT", name="fk_violation_events_run_id_camera_id_detector_runs"),
+        ForeignKeyConstraint(["incident_id", "run_id", "camera_id", "pid"],
+                             ["incidents.id", "incidents.run_id", "incidents.camera_id", "incidents.pid"],
+                             ondelete="RESTRICT", name="fk_violation_events_incident_incidents"),
         CheckConstraint(_in("event_type", EVENT_TYPES), name="event_type"),
         CheckConstraint(EQUIPMENT_CHECK, name="equipment_matches_type"),
         CheckConstraint("pid >= 0", name="pid_non_negative"),

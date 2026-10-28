@@ -6,6 +6,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY alembic.ini .
 COPY alembic ./alembic
 COPY db ./db
+COPY ingest ./ingest
 COPY app.py .
 COPY static ./static
 EXPOSE 8000

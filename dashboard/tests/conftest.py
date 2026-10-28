@@ -67,6 +67,34 @@ def conn(engine):
         tx.rollback()
 
 
+ALL_TABLES = "violation_events, incidents, person_run_reports, detector_runs, cameras"
+
+
+@pytest.fixture
+def api(db_url, engine, monkeypatch):
+    """Uygulama ppe_test'e bağlı; her test boş DB, boş RAM ve boş test snapshot klasörüyle başlar."""
+    import app as app_module
+    from fastapi.testclient import TestClient
+    monkeypatch.setenv("DATABASE_URL", db_url)
+    with engine.begin() as c:
+        c.execute(text(f"TRUNCATE {ALL_TABLES} RESTART IDENTITY"))
+    with app_module.LOCK:
+        app_module.CAMS.clear()
+        app_module.ALERTS.clear()
+        app_module.ALERT_SEQ = 0
+    app_module._HB.clear()
+    for f in app_module.SNAP_DIR.iterdir():
+        f.unlink()
+    yield TestClient(app_module.app)
+    with engine.begin() as c:                     # sonraki (şema/migration) testlerine veri taşınmasın
+        c.execute(text(f"TRUNCATE {ALL_TABLES} RESTART IDENTITY"))
+
+
+def count(engine, table: str, where: str = "", **params) -> int:
+    with engine.connect() as c:
+        return c.execute(text(f"SELECT count(*) FROM {table} {where}"), params).scalar()
+
+
 # ---------------------------------------------------------------- yardımcılar
 UNIQUE, FK, CHECK, NOT_NULL = "23505", "23503", "23514", "23502"
 
@@ -87,10 +115,14 @@ def seed(conn) -> dict:
     return ids
 
 
-EVENT_SQL = """INSERT INTO violation_events (event_id, incident_id, run_id, camera_id, pid, event_type,
+# 0002'den beri her olayın incidents satırı olmalı; aynı ifadede (CTE) eklenir.
+INCIDENT_CTE = """WITH inc AS (INSERT INTO incidents (id, run_id, camera_id, pid)
+    VALUES (:incident_id, :run_id, :camera_id, :pid) ON CONFLICT (id) DO NOTHING) """
+EVENT_INSERT = """INSERT INTO violation_events (event_id, incident_id, run_id, camera_id, pid, event_type,
     missing_helmet, missing_vest, missing_text, helmet_rate, vest_rate, video_time_sec, occurred_at, box, snapshot_path)
     VALUES (:event_id, :incident_id, :run_id, :camera_id, :pid, :event_type, :missing_helmet, :missing_vest,
     :missing_text, :helmet_rate, :vest_rate, :video_time_sec, :occurred_at, CAST(:box AS jsonb), :snapshot_path)"""
+EVENT_SQL = INCIDENT_CTE + EVENT_INSERT
 
 
 def event(run_id, **over) -> dict:
