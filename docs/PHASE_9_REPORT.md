@@ -298,7 +298,7 @@ Uzun süreli eğilimler: §6.
 | 1 saatlik stabilite | **PASS** (3600.1 sn gerçek koşu, 19:42:08Z–20:42:35Z; sızıntı göstergesi yok) | `stress.py --matrix 3:2 --duration 3600` |
 | 4 saatlik ve 24 saatlik soak | **NOT RUN** | — |
 | Ultralytics çevrimdışı | PASS | `telemetry_check.py`, birim test |
-| FastAPI/Starlette yükseltmesi (izole) | PASS 319/319 | §11 |
+| FastAPI/Starlette yükseltmesi (uygulandı, ayrı commit) | PASS — pip-audit temiz, 319/319, 29/29, 21/21 | §18 |
 | Gerçek RTSP kamera, yanlış RTSP parolası, gerçek disk doldurma, uyku/yeniden başlatma, GPU OOM/sıfırlama | **SKIP** | donanım/güvenlik |
 | Saha doğruluğu (etiketli veri) | **BLOCKED** (FAZ 8) | — |
 
@@ -321,7 +321,8 @@ dedektörde görünmemesi (D2), düzeltilmiş token'ın geç kullanılması (G1)
 
 ## 17. Commit
 
-Bu raporla oluşturulan commit: `git log` içinde "FAZ 9: …". Plan belgesi, `tools/reliability/output/`
+FAZ 9 commit'i: **`d3af4ca`** ("FAZ 9: Operasyonel gözlem, çoklu kamera yük/soak testi ve arıza enjeksiyonu").
+Yükseltme commit'i: §18 (`git log -1`). Plan belgesi, `tools/reliability/output/`
 (ham ölçümler, test yığınının üretilmiş sırları) commit'e eklenmedi.
 
 İzole test yığını `ppe-rel` durduruldu (`docker compose -p ppe-rel -f tools/reliability/docker-compose.reliability.yml
@@ -330,6 +331,26 @@ kullanıcı kararıdır: `… down` ve gerekirse `docker volume rm ppe-rel_rel_p
 
 ## 18. FastAPI/Starlette güvenlik yükseltmesi (ayrı commit)
 
-İzole doğrulama (bu commit'ten önce): FastAPI 0.162.0 + Starlette 1.10.0, geçici test container'ında 319/319 PASS,
-`pip check` temiz. Uygulama, imaj derlemesi, tarayıcı/LAN testleri ve pip-audit sonucu bir sonraki commit'te bu
-bölüme eklenir.
+Değişiklik: `dashboard/requirements.txt` — `fastapi==0.115.5` → `0.162.0`, `starlette==1.10.0` açıkça sabitlendi
+(FastAPI 0.162 yalnız `starlette>=0.46.0` ister; güvenlik düzeltmesinin geri kaymaması için). Yeni geçişli
+bağımlılıklar: `annotated-doc`, `opentelemetry-api` (yalnız API; SDK/dışa aktarıcı yok, veri göndermez). Uygulama
+kodunda değişiklik gerekmedi.
+
+| Kontrol | Sonuç |
+|---|---|
+| İzole ön doğrulama (geçici container, yalnız paket değişimi) | 319/319 PASS, `pip check` temiz |
+| `docker compose build dashboard` (yeni imaj: FastAPI 0.162.0, Starlette 1.10.0, Pydantic 2.14.2) | PASS |
+| `pip-audit -r dashboard/requirements.txt` (2026-11-01) | **No known vulnerabilities found** (önce: starlette 7 kayıt) |
+| Dashboard testleri (gerçek PostgreSQL 17) | **319/319 PASS** |
+| Tarayıcı (fixture'da FastAPI 0.162.0 / Starlette 1.10.0 doğrulandı) | **29/29 PASS** |
+| LAN TLS izole smoke | **21/21 PASS** |
+| Yeni imaj uvicorn altında (izole `ppe-rel`): bozuk payload J, WebSocket K2, 503 F | PASS (kodlar beklendiği gibi; K2 0.22 sn; F kayıp 0 / çift 0) |
+
+Uyarı (yalnız testler): Starlette 1.x `TestClient` için `httpx` kullanımını kullanımdan kaldırılıyor olarak
+işaretliyor (`httpx2` öneriyor); test bağımlılığı ayrı bir işte güncellenmeli.
+
+**Geri dönüş planı:** (1) `git revert <yükseltme commit'i>` (yalnız requirements.txt + bu bölüm + SECURITY.md);
+(2) `docker compose build dashboard && docker compose up -d dashboard`; (3) `docker compose --profile test run --rm
+tests` ile doğrula. Şema/migration değişikliği olmadığından veri geri dönüşü gerekmez. Ana dashboard container'ı bu
+fazda yeniden başlatılmadı: yeni imaj (`ppe-dashboard`) derlendi ama çalışan ana container eski imajla sürüyor;
+güncellemek kullanıcı kararıdır: `docker compose up -d dashboard`.

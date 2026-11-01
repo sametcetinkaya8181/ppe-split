@@ -95,10 +95,9 @@ kaydı güncelleyemez/silemez. Kayıt güvenlik içindir; çalışanların izlen
 - Yükseltmede: mevcut `data/snapshots` root'a aitse bir kez
   `docker run --rm --user root -v <proje>/data:/data ppe-dashboard chown 10001:10001 /data/snapshots` (yalnız dizin;
   dosyalara dokunulmaz). Yazılamazsa `/health/ready` 503 döner.
-- `pip-audit` (2026-10-28): `python-multipart` 0.0.17 → **0.0.31** (7 kayıt kapandı). **Açık:** `starlette 0.41.3`
-  7 kayıt (düzeltme 0.47.2–1.3.1; FastAPI yükseltmesi gerektirir). Telafi: StaticFiles/HTTPEndpoint kullanılmıyor,
-  Range işlenmiyor, Host allowlist, ingest token'ı gövde ayrıştırmadan önce. **Öneri:** FastAPI/Starlette
-  yükseltmesi ayrı, testli bir değişiklik olarak yapılmalı.
+- `pip-audit` (2026-10-28): `python-multipart` 0.0.17 → **0.0.31** (7 kayıt kapandı).
+- FAZ 9 (2026-11-01): `fastapi` 0.115.5 → **0.162.0**, `starlette` 0.41.3 → **1.10.0** (açıkça sabitli) — starlette'in
+  7 kaydı kapandı; `pip-audit`: bilinen açık yok. Doğrulama ve geri dönüş planı: `docs/PHASE_9_REPORT.md` §18.
 
 ## Sızıntı önleme (FAZ 5'ten, regresyon testli)
 
