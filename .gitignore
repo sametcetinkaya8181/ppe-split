@@ -58,3 +58,7 @@ backups/
 
 # ---- Dedektör kalıcı outbox (olay + snapshot görüntüsü içerir; pushlanmaz) ----
 detector/outbox/
+
+# ---- FAZ 8 model değerlendirme: veri kümeleri, etiketler ve çıktılar (görüntü içerir; pushlanmaz) ----
+detector/evaluation/datasets/
+detector/evaluation/output/
