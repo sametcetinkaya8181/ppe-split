@@ -42,6 +42,7 @@ MAX_EVENTS_PER_REQUEST = int(os.getenv("MAX_EVENTS_PER_REQUEST", 200))
 MAX_SNAPSHOT_BYTES = int(os.getenv("MAX_SNAPSHOT_BYTES", 1024 * 1024))
 MAX_REPORT_BYTES = int(os.getenv("MAX_REPORT_BYTES", 1024 * 1024))
 MAX_REPORT_ROWS = int(os.getenv("MAX_REPORT_ROWS", 5000))
+MAX_EVENTS_BODY_BYTES = int(os.getenv("MAX_EVENTS_BODY_BYTES", 8 * 1024 * 1024))   # /ingest/events (outbox batch)
 HEARTBEAT_SEC = float(os.getenv("HEARTBEAT_SEC", 30))     # olaysız karelerde en sık DB canlılık yazımı
 WS_RECHECK_SEC = float(os.getenv("WS_RECHECK_SEC", 15))   # açık WebSocket'te oturumun yeniden doğrulanma aralığı
 
@@ -245,7 +246,7 @@ def flush_heartbeats(timeout: float = 10.0):
         f.result(timeout)
 
 
-def _persist_events(cam: Cam, data: schemas.FramePayload, raw_events: list) -> list:
+def _persist_events(cam: Cam, data: schemas.FramePayload, raw_events: list, run_labels: Optional[dict] = None) -> list:
     """Olayları doğrular, snapshot'ları hazırlar, tek transaction'da yazar. Döner: [(ham_olay, snapshot_yolu)]
     yalnızca GERÇEKTEN yeni olaylar için (commit sonrası RAM'e eklenecek)."""
     if len(raw_events) > MAX_EVENTS_PER_REQUEST:
@@ -301,6 +302,8 @@ def _persist_events(cam: Cam, data: schemas.FramePayload, raw_events: list) -> l
                 extra = ({k: meta_run[k] for k in ("loop_no", "fps", "width", "height", "source_label", "source_kind",
                                                    "source_ref")}
                          if run_id == meta_run["run_id"] and run_cams[run_id] == cam.id else {})
+                if run_labels and run_labels.get(run_id) and not extra.get("source_label"):
+                    extra = {**extra, "source_label": run_labels[run_id]}     # olayla dondurulmuş etiket (ilk değer kalır)
                 repo.upsert_run(s, run_id, run_cams[run_id], started_at=first, **extra)
             repo.upsert_incidents(s, [{"id": ev.incident_id, "run_id": ev.run_id, "camera_id": ev.camera_id,
                                        "pid": ev.pid} for ev, _ in uniq.values()])
@@ -387,6 +390,43 @@ async def ingest_report(request: Request, x_token: Optional[str] = Header(None))
     if rep.status:
         cam.meta["status"] = rep.status
     return {"ok": True}
+
+
+@app.post("/ingest/events")
+async def ingest_events(request: Request, x_token: Optional[str] = Header(None)):
+    """Yalnız olay (kare YOK): dedektörün kalıcı outbox'ından teslim (FAZ 7). Gövde JSON {cam, name, events}.
+    /ingest/frame ile aynı doğrulama, transaction ve event_id idempotency'si; 2xx yalnız commit sonrası.
+    Canlı video/WebSocket'e dokunmaz (sahte kare üretilmez)."""
+    await run_in_threadpool(_auth, x_token, request)
+    body = bytearray()
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > MAX_EVENTS_BODY_BYTES:
+            _http_error(413, f"olay gövdesi {MAX_EVENTS_BODY_BYTES} bayt sınırını aşıyor")
+    try:
+        raw = schemas.load_json(bytes(body), "body")
+        if not isinstance(raw, dict) or not isinstance(raw.get("events"), list):
+            raise schemas.PayloadError([{"loc": ["body", "events"], "msg": "events listesi gerekli", "type": "list_type"}])
+        data = schemas.validate(schemas.FramePayload, {"cam": raw.get("cam"), "name": raw.get("name"),
+                                                       "events": raw["events"]})
+    except schemas.PayloadError as exc:
+        _http_error(422, exc.errors)
+    if not data.events:
+        return {"ok": True, "inserted": 0}
+    cam = get_cam(data.cam, redact_text(data.name) if data.name else None)
+    labels = {}
+    for e in data.events:                      # outbox olayları kendi run etiketini taşır (FAZ 7)
+        lbl, rid = e.get("source_label"), e.get("run_id")
+        if isinstance(lbl, str) and lbl.strip() and rid:
+            try:
+                labels.setdefault(uuid.UUID(str(rid)), redact_text(lbl)[:120])
+            except ValueError:
+                pass
+    new = await run_in_threadpool(_persist_events, cam, data, data.events, labels)   # 2xx yalnız commit sonrası
+    for raw_ev, path in new:
+        target = cam if raw_ev.get("camera_id") == cam.id else get_cam(raw_ev.get("camera_id"))
+        push_alert(raw_ev, target, path)
+    return {"ok": True, "inserted": len(new)}
 
 
 # ---------------- tarayıcıya sunulanlar ----------------
@@ -543,7 +583,7 @@ def health_ready(request: Request):
 # ---------------- geçmiş (PostgreSQL, salt okuma) ----------------
 # Durum/sayım tanımları: db/history.py. Bu uçlar canlı RAM durumunu (CAMS/ALERTS) kullanmaz ve değiştirmez.
 ACTIVE_WINDOW_SEC = float(os.getenv("ACTIVE_WINDOW_SEC", max(3 * HEARTBEAT_SEC, 60)))
-RUN_STATUSES = ("running", "finished", "error", "interrupted")
+RUN_STATUSES = ("running", "finished", "error", "interrupted", "abandoned")
 _SNAP_URL = re.compile(r"^snapshots/alert_[0-9a-f-]{36}\.jpg$")
 CameraQ = Query(None, pattern=schemas.CAMERA_ID, max_length=40)
 TzQ = Query("UTC", max_length=64, pattern=r"^[A-Za-z0-9_+\-/]+$")

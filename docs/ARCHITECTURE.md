@@ -79,8 +79,12 @@ birleşimidir (`missing_at_start` ayrıca verilir).
   uyarı oluşmaz; farklı içerikle gelirse `409`.
 - Olaysız karelerde kamera/run canlılığı (`last_seen_at`) en fazla `HEARTBEAT_SEC`'te (30 sn) bir ve **arka planda**
   yazılır: DB yavaş/kapalıyken canlı kare isteği beklemez (kamera başına tek bekleyen yazım).
-- Dedektör olayları yalnızca bellekte tutar. Ctrl+C'de kuyruk `DRAIN_TIMEOUT` (10 sn) boyunca boşaltılır ve run
-  `interrupted` raporlanır (gerçek Ctrl+C testi: 2 sn'de temiz kapanış). Süreç zorla öldürülürse kuyruk kaybolur.
+- FAZ 7: dedektör olayları ve raporları önce kamera başına **kalıcı SQLite WAL outbox**'a yazar, sonra
+  `POST /ingest/events` / `/ingest/report` ile FIFO teslim eder; kareler `/ingest/frame` ile olaysız ve kalıcı
+  olmadan gider. Zorla öldürme sonrası yeniden başlatmada bekleyenler aynı kimliklerle gönderilir (gerçek GPU
+  testiyle doğrulandı). Ayrıntı ve garanti sınırları: [OUTBOX.md](OUTBOX.md). `OUTBOX_ENABLED=0` eski davranış.
+- Rapor göndermeden kapanan run `running` kalır; `maintenance.runs reconcile` (onaylı) onu `abandoned` yapar
+  (sahte `finished` yok); sonradan canlılık/rapor gelirse durum geri döner.
 
 ## Bilinen sınırlamalar
 

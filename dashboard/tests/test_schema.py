@@ -207,7 +207,7 @@ def test_report_unknown_run_rejected(conn):
 def test_all_timestamps_are_timestamptz(conn):
     rows = conn.execute(text("SELECT table_name, column_name, data_type FROM information_schema.columns "
                              "WHERE table_schema = 'public' AND column_name LIKE '%\\_at' ESCAPE '\\'")).all()
-    assert len(rows) == 16                                    # 0004: +7 (app_users 3, user_sessions 4)
+    assert len(rows) == 17                                    # 0004: +7, 0005: +1 (reconciled_at)
     assert {r.data_type for r in rows} == {"timestamp with time zone"}, rows
 
 

@@ -47,8 +47,12 @@ Kök `.env` (compose):
 | `HEARTBEAT_SEC`, `MAX_*` | dashboard sınırları (README) |
 
 `detector/.env`: `INGEST_TOKEN`, `DASHBOARD_URL`, `DEVICE`, `IMGSZ`, `VID_STRIDE`, `LOOP`, `VIDEO_SOURCES` /
-`YOUTUBE_n` / `SOURCE_n`, `CAMERA_ID_MODE` (`index` varsayılan | `source`), `SEND_TIMEOUT`, `EVENT_QUEUE_MAX`,
-`DRAIN_TIMEOUT`.
+`YOUTUBE_n` / `SOURCE_n`, `CAMERA_ID_MODE` (`index` varsayılan | `source`), `SEND_TIMEOUT`, `DRAIN_TIMEOUT`,
+FAZ 7 outbox: `OUTBOX_ENABLED`, `OUTBOX_DIR`, `OUTBOX_MAX_BYTES`, `OUTBOX_MAX_ITEMS`, `OUTBOX_HIGH_WATERMARK`,
+`OUTBOX_RETRY_BACKOFF_MAX` ([OUTBOX.md](OUTBOX.md)). `EVENT_QUEUE_MAX` yalnız `OUTBOX_ENABLED=0` ile geçerlidir.
+
+Dedektör ve dashboard birlikte güncellenmelidir: yeni dedektör olayları `POST /ingest/events` ile gönderir; eski
+dashboard bu ucu tanımazsa olaylar düşürülmez, outbox'ta bekler (log: "/ingest/events ucunu tanımıyor").
 
 ## Kamera kimliği
 
@@ -98,6 +102,8 @@ python scripts/restore_check.py backups\ppe-<UTC>
 docker compose exec dashboard python -m maintenance.storage snapshots      # dry run
 docker compose exec dashboard python -m maintenance.storage retention      # yalnız rapor
 docker compose exec dashboard python -m db.roles check
+docker compose exec dashboard python -m maintenance.runs reconcile          # dry run (çökmüş run'lar)
+cd detector; python outbox.py status                                        # dedektör outbox durumu
 ```
 
 ## Sorun giderme

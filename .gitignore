@@ -55,3 +55,6 @@ Thumbs.db
 
 # ---- Yedekler (DB dump + snapshot kopyaları; pushlanmaz) ----
 backups/
+
+# ---- Dedektör kalıcı outbox (olay + snapshot görüntüsü içerir; pushlanmaz) ----
+detector/outbox/

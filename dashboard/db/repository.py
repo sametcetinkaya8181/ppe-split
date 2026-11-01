@@ -8,7 +8,7 @@ yine de oluşursa çağıran 503 ile retry ettirir)."""
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import func, select, update
+from sqlalchemy import case, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -53,7 +53,10 @@ def upsert_run(s: Session, run_id, camera_id: str, *, started_at: datetime | Non
               "last_seen_at": func.greatest(DetectorRun.last_seen_at, ex.last_seen_at),
               "source_label": func.coalesce(DetectorRun.source_label, ex.source_label),
               "source_kind": func.coalesce(DetectorRun.source_kind, ex.source_kind),
-              "source_ref": func.coalesce(DetectorRun.source_ref, ex.source_ref)},
+              "source_ref": func.coalesce(DetectorRun.source_ref, ex.source_ref),
+              # uzlaştırma 'abandoned' dediyse ama run hâlâ canlıysa (ör. uzun ağ kesintisi) kanıt kazanır
+              "status": case((DetectorRun.status == "abandoned", "running"), else_=DetectorRun.status),
+              "finished_at": case((DetectorRun.status == "abandoned", None), else_=DetectorRun.finished_at)},
         where=DetectorRun.camera_id == ex.camera_id,
     ).returning(DetectorRun.id)
     if s.execute(stmt).first() is None:

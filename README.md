@@ -163,10 +163,13 @@ Her seferinde yazmak istemezsen `detector/.env` oluştur (örnek: `.env.example`
 | `LOOP` | `1` | Video bitince başa sar |
 | `INGEST_TOKEN` | boş | Doluysa dashboard (compose) ile aynı olmalı |
 | `SEND_TIMEOUT` | `5` | Dashboard HTTP isteği zaman aşımı (sn) |
-| `EVENT_QUEUE_MAX` | `2000` | Kamera başına bellekte bekleyebilecek en fazla olay. Dolarsa önce en eski `ongoing` atılır; atılacak `ongoing` yoksa yeni olay reddedilir (log + sayaç) |
+| `OUTBOX_ENABLED` | `1` | Olay/raporları önce diskteki kalıcı kuyruğa (SQLite WAL) yaz; `0` = eski bellek içi kuyruk |
+| `OUTBOX_DIR` | `detector/outbox` | Kalıcı kuyruk klasörü (Git dışı; ihlal görüntüsü içerir) |
+| `OUTBOX_MAX_BYTES` / `OUTBOX_MAX_ITEMS` | 512 MiB / 100000 | Dolunca yalnız `ongoing` seyreltilir; start/end/rapor sessizce düşmez (docs/OUTBOX.md) |
+| `EVENT_QUEUE_MAX` | `2000` | Yalnız `OUTBOX_ENABLED=0` ile: bellekteki en fazla olay |
 | `DRAIN_TIMEOUT` | `10` | Ctrl+C / kapanışta bekleyen olayları göndermek için en fazla süre (sn) |
 
-**Olay teslimi:** Her ihlal olayı `event_id`, `run_id`, `incident_id`, `camera_id` ve UTC `occurred_at` ile üretilir; dashboard'a ulaşılamazsa aynı kimliklerle tekrar denenir. Bekleyen olaylar yalnızca **bellekte** tutulur: Ctrl+C ile kapatınca en fazla `DRAIN_TIMEOUT` saniye gönderilmeye çalışılır, ama süreç zorla kapatılır veya çökerse gönderilmemiş olaylar kaybolur.
+**Olay teslimi (FAZ 7):** Her ihlal olayı `event_id`, `run_id`, `incident_id`, `camera_id` ve UTC `occurred_at` ile üretilir ve önce kamera başına kalıcı outbox'a (SQLite WAL, `synchronous=FULL`) yazılır. Dashboard'a ulaşılamazsa, dedektör çökerse veya zorla kapatılırsa bekleyen olaylar bir sonraki başlatmada aynı kimliklerle gönderilir; PostgreSQL tekrarları ayıklar (en az bir kez teslim + tekilleştirme; "exactly-once" iddiası yok). Kamera kapalıyken bekleyenleri göndermek: `python outbox.py drain <kamera>`. Ayrıntı: [docs/OUTBOX.md](docs/OUTBOX.md).
 
 Dedektör birim testleri (GPU gerekmez): `cd detector; .venv\Scripts\python -m pip install -r requirements-dev.txt; .venv\Scripts\python -m pytest`
 

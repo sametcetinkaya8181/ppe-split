@@ -18,7 +18,7 @@ TZ = DateTime(timezone=True)
 
 CAMERA_ID_RE = "^[A-Za-z0-9_-]{1,40}$"            # dashboard get_cam() temizliğiyle aynı
 SNAPSHOT_PATH_RE = r"^snapshots/[A-Za-z0-9_.-]+\.jpg$"
-RUN_STATUSES = ("running", "finished", "error", "interrupted")
+RUN_STATUSES = ("running", "finished", "error", "interrupted", "abandoned")   # 0005: abandoned
 SOURCE_KINDS = ("file", "webcam", "rtsp", "youtube", "other")
 EVENT_TYPES = ("start", "ongoing", "end")
 
@@ -92,6 +92,9 @@ class DetectorRun(Base):
     source_label: Mapped[str | None] = mapped_column(String(120))
     source_kind: Mapped[str | None] = mapped_column(String(20))
     source_ref: Mapped[str | None] = mapped_column(String(300))
+    # 0005: yalnız maintenance.runs uzlaştırması yazar (abandoned); rapor/canlılık gelirse durum geri döner.
+    reconciled_at: Mapped[datetime | None] = mapped_column(TZ)
+    reconcile_reason: Mapped[str | None] = mapped_column(String(64))
 
 
 class Incident(Base):

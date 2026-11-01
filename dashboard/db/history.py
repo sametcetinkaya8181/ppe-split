@@ -145,6 +145,7 @@ def _incident_rows(*, camera_id=None, run_id=None, date_from=None, date_to=None,
         (listed("stale"), "stale"),
         (listed("run_end"), "run_end"),
         (listed("superseded"), "superseded"),
+        (RUN.c.status == "abandoned", "run_abandoned"),
         (md.is_(None), "missing_metadata"),
         (overflow > 0, "metadata_overflow"),
         else_="not_reported")

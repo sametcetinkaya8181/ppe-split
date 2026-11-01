@@ -22,6 +22,16 @@ snapshot yalnızca start'ta ve `^snapshots/[A-Za-z0-9_.-]+\.jpg$`.
 | 0001 | başlangıç şeması | — |
 | 0002 | `incidents`, `report_metadata` | metadata doluysa onaysız durur |
 | 0003 | `detector_runs.source_label/source_kind/source_ref` + 2 CHECK; **geri doldurma yok** | sütunlar doluysa onaysız durur (`-x allow_data_loss=1`) |
+| 0004 | `app_users`, `user_sessions`, `audit_log` (FAZ 6) | kullanıcı/denetim kaydı varsa durur |
+| 0005 | `detector_runs.status` += `abandoned`; `reconciled_at`, `reconcile_reason` (FAZ 7) | uzlaştırılmış run varsa durur |
+
+### Çökmüş run uzlaştırması (FAZ 7)
+
+`docker compose exec dashboard python -m maintenance.runs reconcile` — **dry run**: `running` + rapor yok + son
+canlılık 60 dk'dan (en az 10) eski run'ları listeler. `--apply --confirm <adet>` ile `abandoned` yapar
+(`finished_at` = son canlılık kanıtı), her run için `audit_log 'run_reconcile'`. Sonradan canlılık gelirse `running`,
+rapor gelirse rapordaki durum geçerli olur. Ana DB'de FAZ 5'ten kalan 3 run aday olarak listelendi; **onay
+verilmediği için uygulanmadı**.
 
 Uygulama: `docker compose up -d` → `db-roles` → `migrate` (`alembic upgrade head && python -m db.roles grants`,
 `ppe_migrator` rolüyle) → `dashboard`. ORM ↔ migration uyumu `test_orm_matches_migration` ile denetlenir.

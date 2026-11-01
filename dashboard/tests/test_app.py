@@ -28,7 +28,7 @@ def test_ready_200_at_head(client, db_url, monkeypatch):
 
 def test_ready_details_only_for_admin(api):
     assert api.get("/health/ready").json() == {"status": "ready", "db": "ok", "schema": "current",
-                                               "revision": ["0004"]}
+                                               "revision": ["0005"]}
 
 
 def test_ready_503_when_schema_outdated(client, db_url, monkeypatch):

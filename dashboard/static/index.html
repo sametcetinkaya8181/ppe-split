@@ -138,6 +138,7 @@
   .pill.stale, .pill.run_end { background: var(--warn); } .pill.orphan, .pill.unknown { background: #6b7580; }
   .pill.running { background: var(--series); } .pill.finished { background: var(--ok); }
   .pill.error { background: var(--bad); } .pill.interrupted { background: var(--warn); }
+  .pill.abandoned { background: #6b7580; }
   .legacy { font-style: italic; color: var(--warn); }
   .why { display: block; font-size: 12px; color: var(--ink-soft); margin-top: 2px; }
   .thumb { width: 44px; height: 56px; object-fit: cover; background: #0c0f12; display: block; cursor: zoom-in; }
@@ -301,6 +302,7 @@
       <label>Durum<select name="status">
         <option value="">Tümü</option><option value="running">Çalışıyor</option><option value="finished">Bitti</option>
         <option value="interrupted">Durduruldu</option><option value="error">Hata</option>
+        <option value="abandoned">Yanıt vermeden kapandı</option>
       </select></label>
       <div class="actions"><button type="submit" class="primary">Uygula</button><button type="button" id="rReset">Sıfırla</button></div>
     </form>
@@ -500,8 +502,10 @@ const REASON = {
   stale: "Kişi bir süre görülmedi, takip bırakıldı", run_end: "Video/run bittiğinde ihlal sürüyordu",
   superseded: "Aynı iz için yeni ihlal başladı", missing_metadata: "Run raporunda kapanış bilgisi yok",
   metadata_overflow: "Run raporundaki liste taşmış; kapanış nedeni bilinmiyor", not_reported: "Run raporunda yer almıyor",
-  no_start_event: "Başlangıç olayı kaydedilmemiş" };
-const RUN_STATUS = { running: "Çalışıyor", finished: "Bitti", interrupted: "Durduruldu", error: "Hata" };
+  no_start_event: "Başlangıç olayı kaydedilmemiş",
+  run_abandoned: "Run rapor göndermeden kapandı (uzlaştırıldı)" };
+const RUN_STATUS = { running: "Çalışıyor", finished: "Bitti", interrupted: "Durduruldu", error: "Hata",
+                     abandoned: "Yanıt vermeden kapandı" };
 const EVENT_TYPE = { start: "Başladı", ongoing: "Sürüyor", end: "Bitti" };
 const SNAP_RE = /^\/snapshots\/alert_[0-9a-f-]{36}\.jpg$/;
 const TZ = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch (e) { return "UTC"; } })();

@@ -37,6 +37,8 @@ import cv2
 import torch
 from ultralytics import YOLO
 
+import detector_env
+import outbox as outbox_mod
 import ppe_core as core
 import protocol
 
@@ -65,6 +67,13 @@ BUFFER = os.getenv("BUFFER", "1") == "1"            # canlı akışta kareleri s
 SEND_TIMEOUT = float(os.getenv("SEND_TIMEOUT", 5))      # dashboard HTTP isteği zaman aşımı (sn)
 EVENT_QUEUE_MAX = int(os.getenv("EVENT_QUEUE_MAX", 2000))  # kamera başına bellekteki en fazla bekleyen olay
 DRAIN_TIMEOUT = float(os.getenv("DRAIN_TIMEOUT", 10))   # kapanışta kuyruğu boşaltmak için en fazla bekleme (sn)
+# FAZ 7 kalıcı outbox (detector/outbox.py). Kapasite dolunca yalnız 'ongoing' seyreltilir; start/end/rapor için
+# OUTBOX_MAX_* değerlerinin %25 üzerine kadar yedek alan vardır, o da dolarsa görünür hata (bellek yedeği).
+OUTBOX_ENABLED = os.getenv("OUTBOX_ENABLED", "1") == "1"
+OUTBOX_MAX_BYTES = int(os.getenv("OUTBOX_MAX_BYTES", 512 * 1024 * 1024))
+OUTBOX_MAX_ITEMS = int(os.getenv("OUTBOX_MAX_ITEMS", 100_000))
+OUTBOX_HIGH_WATERMARK = float(os.getenv("OUTBOX_HIGH_WATERMARK", 0.8))
+OUTBOX_RETRY_BACKOFF_MAX = float(os.getenv("OUTBOX_RETRY_BACKOFF_MAX", 30))
 
 GREEN, RED, GRAY = (0, 200, 0), (0, 0, 255), (160, 160, 160)
 
@@ -310,7 +319,9 @@ def stream_worker(cid, name, source, delay, stop):
         return
     if os.getenv("VERBOSE", "0") != "1":         # "Waiting for stream" gibi zararsız uyarıları gizle
         logging.getLogger("ultralytics").setLevel(logging.ERROR)
-    sender = protocol.Sender(cid, name, DASHBOARD_URL, INGEST_TOKEN, timeout=SEND_TIMEOUT, queue_max=EVENT_QUEUE_MAX)
+    sender = _make_sender(cid, name)
+    if sender is None:                           # outbox kilitli/bozuk: bu kamera başlatılmaz (diğerleri sürer)
+        return
     sender.start()
     try:
         try:
@@ -335,9 +346,36 @@ def stream_worker(cid, name, source, delay, stop):
     finally:                                     # bekleyen olay/raporları sınırlı süre boşalt
         sender.close(DRAIN_TIMEOUT)
         st = sender.snapshot_stats()
-        print(f"[{cid}] gönderici kapandı: {st.get('events_sent', 0)} olay, {st.get('reports_sent', 0)} rapor iletildi; "
-              f"düşürülen {st.get('dropped_permanent', 0) + st.get('dropped_queue_full', 0)}, "
-              f"atılan ongoing {st.get('evicted_ongoing', 0)}", flush=True)
+        if OUTBOX_ENABLED:
+            print(f"[{cid}] gönderici kapandı: {st['events_sent']} olay, {st['reports_sent']} rapor iletildi; "
+                  f"outbox'ta bekleyen {st['pending_count']}, ölü {st['dead_letter_count']}, karantina "
+                  f"{st['quarantine_count']}, atılan ongoing {st['evicted_ongoing'] + st['dropped_ongoing_full']}",
+                  flush=True)
+        else:
+            print(f"[{cid}] gönderici kapandı: {st.get('events_sent', 0)} olay, {st.get('reports_sent', 0)} rapor "
+                  f"iletildi; düşürülen {st.get('dropped_permanent', 0) + st.get('dropped_queue_full', 0)}, "
+                  f"atılan ongoing {st.get('evicted_ongoing', 0)}", flush=True)
+
+
+def _make_sender(cid, name):
+    """Varsayılan: kalıcı outbox (FAZ 7). OUTBOX_ENABLED=0 -> eski bellek içi Sender (olaylar çökmede kaybolur)."""
+    if not OUTBOX_ENABLED:
+        return protocol.Sender(cid, name, DASHBOARD_URL, INGEST_TOKEN, timeout=SEND_TIMEOUT, queue_max=EVENT_QUEUE_MAX)
+    try:
+        ob = outbox_mod.Outbox(outbox_mod.path_for(cid), cid, max_bytes=OUTBOX_MAX_BYTES, max_items=OUTBOX_MAX_ITEMS,
+                               high_watermark=OUTBOX_HIGH_WATERMARK)
+    except outbox_mod.OutboxError as exc:
+        print(f"[{cid}] HATA: outbox açılamadı — bu kamera BAŞLATILMADI. {exc}. Dosyayı silmeyin; "
+              f"docs/OUTBOX.md 'Kurtarma' adımlarını izleyin.", flush=True)
+        return None
+    m = ob.metrics()
+    if m["pending_count"] or m["dead_letter_count"] or m["quarantine_count"]:
+        print(f"[{cid}] outbox kurtarma: {m['pending_count']} bekleyen mesaj (en eski {m['oldest_pending_age_sec']} sn) "
+              f"aynı kimliklerle gönderilecek; ölü {m['dead_letter_count']}, karantina {m['quarantine_count']}.",
+              flush=True)
+    return outbox_mod.DurableSender(cid, name, DASHBOARD_URL, INGEST_TOKEN, ob, timeout=SEND_TIMEOUT,
+                                    backoff_max=OUTBOX_RETRY_BACKOFF_MAX, token_provider=detector_env.env_token,
+                                    status_path=outbox_mod.path_for(cid).with_suffix(".status.json"))
 
 
 def main():
