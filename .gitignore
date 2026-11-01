@@ -62,3 +62,6 @@ detector/outbox/
 # ---- FAZ 8 model değerlendirme: veri kümeleri, etiketler ve çıktılar (görüntü içerir; pushlanmaz) ----
 detector/evaluation/datasets/
 detector/evaluation/output/
+
+# FAZ 9: güvenilirlik/yük testi çıktıları ve izole test yığınının üretilen sırları (Git dışı)
+tools/reliability/output/

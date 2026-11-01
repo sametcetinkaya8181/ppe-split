@@ -171,6 +171,8 @@ Her seferinde yazmak istemezsen `detector/.env` oluştur (örnek: `.env.example`
 
 **Olay teslimi (FAZ 7):** Her ihlal olayı `event_id`, `run_id`, `incident_id`, `camera_id` ve UTC `occurred_at` ile üretilir ve önce kamera başına kalıcı outbox'a (SQLite WAL, `synchronous=FULL`) yazılır. Dashboard'a ulaşılamazsa, dedektör çökerse veya zorla kapatılırsa bekleyen olaylar bir sonraki başlatmada aynı kimliklerle gönderilir; PostgreSQL tekrarları ayıklar (en az bir kez teslim + tekilleştirme; "exactly-once" iddiası yok). Kamera kapalıyken bekleyenleri göndermek: `python outbox.py drain <kamera>`. Ayrıntı: [docs/OUTBOX.md](docs/OUTBOX.md).
 
+**İşletim gözlemi (FAZ 9):** Her kamera için `detector/outbox/<kamera>.health.json` (FPS, gecikme, aşama süreleri, CPU/RAM/GPU, bağlantı durumu, değerlendirilemeyen kişiler ve nedenleri) ve `<kamera>.status.json` (outbox birikmesi ve uyarıları) yazılır; gizli bilgi/görüntü içermez. Canlı ekranda izlenemeyen kamera ("sinyal yok", "akış takıldı", "dedektörden görüntü gelmiyor") ve değerlendirilemeyen kişiler açıkça yazılır. Yöneticiler için `GET /api/ops/metrics` (JSON). Ultralytics anonim analitiği varsayılan kapalıdır (`YOLO_OFFLINE=1`). Ölçümler ve kapasite: [docs/PERFORMANCE_BASELINE.md](docs/PERFORMANCE_BASELINE.md), [docs/PHASE_9_REPORT.md](docs/PHASE_9_REPORT.md).
+
 Dedektör birim testleri (GPU gerekmez): `cd detector; .venv\Scripts\python -m pip install -r requirements-dev.txt; .venv\Scripts\python -m pytest`
 
 ## Sorun giderme

@@ -90,6 +90,7 @@ services:
       SECURITY_PROFILE: ${SECURITY_PROFILE:-local}
       SESSION_IDLE_MINUTES: ${SESSION_IDLE_MINUTES:-30}
       SESSION_MAX_HOURS: ${SESSION_MAX_HOURS:-12}
+      OPS_METRICS: ${OPS_METRICS:-1}            # FAZ 9: /api/ops/metrics (yalnız admin); 0 = kapalı
     depends_on:
       db:
         condition: service_healthy

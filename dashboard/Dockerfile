@@ -12,7 +12,7 @@ COPY db ./db
 COPY auth ./auth
 COPY ingest ./ingest
 COPY maintenance ./maintenance
-COPY app.py .
+COPY app.py observability.py ./
 COPY static ./static
 # Uygulama kodu root'a ait ve salt okunur; süreç ayrıcalıksız kullanıcıyla çalışır (yazma yalnız /data ve /tmp).
 USER 10001:10001

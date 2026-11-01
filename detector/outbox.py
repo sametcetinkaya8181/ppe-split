@@ -23,6 +23,7 @@ import hashlib
 import json
 import os
 import random
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -34,6 +35,10 @@ import protocol
 
 SCHEMA_VERSION = 1
 CRITICAL_TYPES = ("start", "end")
+# FAZ 9 izleme eşikleri (yalnız uyarı üretir; hiçbir mesaj silinmez/düşürülmez)
+AGE_WARN_SEC = float(os.getenv("OUTBOX_AGE_WARN_SEC", 300))                 # en eski bekleyen bu kadar eskiyse
+MIN_FREE_BYTES = int(os.getenv("OUTBOX_MIN_FREE_BYTES", 1024 ** 3))         # outbox diskinde bundan az boş alan
+WAL_LIMIT_BYTES = int(os.getenv("OUTBOX_WAL_LIMIT_BYTES", 64 * 1024 ** 2))  # checkpoint sonrası WAL bu boyuta kırpılır
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS outbox (
@@ -139,6 +144,7 @@ class Outbox:
             self.db.execute("PRAGMA locking_mode=EXCLUSIVE")
             mode = self.db.execute("PRAGMA journal_mode=WAL").fetchone()[0]
             self.db.execute("PRAGMA synchronous=FULL")
+            self.db.execute(f"PRAGMA journal_size_limit={WAL_LIMIT_BYTES}")   # WAL dosyası sınırsız büyümesin
             self.db.execute(f"PRAGMA busy_timeout={int(lock_timeout * 1000)}")
             self.db.execute("BEGIN EXCLUSIVE")              # özel kilit şimdi alınır ve kapanana kadar tutulur
             self.db.execute("COMMIT")
@@ -174,7 +180,9 @@ class Outbox:
             self.db.close()
             raise OutboxError(f"{self.path}: başka kameraya/sürüme ait (camera_id={meta.get('camera_id')!r}, "
                               f"schema={meta.get('schema_version')!r})")
-        self.stats = {"delivered": 0, "evicted_ongoing": 0, "dropped_ongoing_full": 0, "write_errors": 0}
+        self.stats = {"delivered": 0, "evicted_ongoing": 0, "dropped_ongoing_full": 0, "write_errors": 0,
+                      "replayed": 0}
+        self.opened_at = time.time()                       # bundan önce yazılmış + şimdi teslim = replay başarısı
 
     # ------------------------------------------------ yardımcılar
     class _Tx:
@@ -281,11 +289,15 @@ class Outbox:
         now = time.time()
 
         def run():
+            marks = ",".join("?" * len(seqs))
+            replayed = self.db.execute(f"SELECT count(*) FROM outbox WHERE seq IN ({marks}) AND state = 'pending' "
+                                       f"AND created_at < ?", (*seqs, self.opened_at)).fetchone()[0] if seqs else 0
             self.db.executemany("UPDATE outbox SET state = 'delivered', body = '', delivered_at = ?, "
                                 "attempts = attempts + 1 WHERE seq = ? AND state = 'pending'", [(now, s) for s in seqs])
             self.db.execute("DELETE FROM outbox WHERE state = 'delivered' AND delivered_at < ?",
                             (now - self.delivered_retention,))
-        self._write(run)
+            return replayed
+        self.stats["replayed"] += self._write(run)
         self.stats["delivered"] += len(seqs)
 
     def mark_attempt(self, seqs, status) -> None:
@@ -326,14 +338,20 @@ class Outbox:
             oldest = self.db.execute("SELECT min(created_at) FROM outbox WHERE state = 'pending'").fetchone()[0]
             retries = self.db.execute("SELECT coalesce(sum(max(attempts - 1, 0)), 0) FROM outbox "
                                       "WHERE state != 'delivered'").fetchone()[0]
-        return {"pending_count": n, "pending_bytes": b,
-                "oldest_pending_age_sec": round(time.time() - oldest, 1) if oldest else 0.0,
-                "pending_retry_attempts": retries, "delivered_count": self.stats["delivered"],
-                "dead_letter_count": rows.get("dead", 0), "quarantine_count": rows.get("quarantined", 0),
-                "disk_write_errors": self.stats["write_errors"], "evicted_ongoing": self.stats["evicted_ongoing"],
-                "dropped_ongoing_full": self.stats["dropped_ongoing_full"],
-                "high_watermark": n >= self.max_items * self.high_watermark
-                                  or b >= self.max_bytes * self.high_watermark}
+        m = {"pending_count": n, "pending_bytes": b,
+             "oldest_pending_age_sec": round(time.time() - oldest, 1) if oldest else 0.0,
+             "pending_retry_attempts": retries, "delivered_count": self.stats["delivered"],
+             "replay_success_count": self.stats["replayed"],
+             "dead_letter_count": rows.get("dead", 0), "quarantine_count": rows.get("quarantined", 0),
+             "disk_write_errors": self.stats["write_errors"], "evicted_ongoing": self.stats["evicted_ongoing"],
+             "dropped_ongoing_full": self.stats["dropped_ongoing_full"],
+             "high_watermark": n >= self.max_items * self.high_watermark
+                               or b >= self.max_bytes * self.high_watermark,
+             "capacity_used_ratio": round(max(n / self.max_items, b / self.max_bytes), 4),
+             "db_bytes": _size(self.path), "wal_bytes": _size(Path(str(self.path) + "-wal")),
+             "disk_free_bytes": _free(self.path.parent)}
+        m["warnings"] = outbox_warnings(m)
+        return m
 
     def checkpoint(self) -> None:
         with self.lock:
@@ -346,6 +364,44 @@ class Outbox:
         with self.lock:
             self.checkpoint()
             self.db.close()
+
+
+def _size(path: Path) -> int | None:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return None
+
+
+def _free(path: Path) -> int | None:
+    try:
+        return shutil.disk_usage(path).free
+    except OSError:
+        return None
+
+
+def outbox_warnings(m: dict) -> list:
+    """Operatör uyarıları (sabit sözlük). Uyarı yalnız görünürlük içindir: mesaj silinmez, düşürülmez."""
+    w = []
+    if m.get("high_watermark"):
+        w.append("high_watermark")
+    if m.get("pending_count") and (m.get("oldest_pending_age_sec") or 0) >= AGE_WARN_SEC:
+        w.append("pending_age")
+    if m.get("dead_letter_count"):
+        w.append("dead_letters")
+    if m.get("quarantine_count"):
+        w.append("quarantine")
+    if m.get("disk_write_errors"):
+        w.append("disk_write_errors")
+    if m.get("disk_free_bytes") is not None and m["disk_free_bytes"] < MIN_FREE_BYTES:
+        w.append("disk_free_low")
+    if m.get("memory_fallback"):
+        w.append("memory_fallback")
+    if m.get("state") in ("paused_auth", "paused_incompatible"):
+        w.append("delivery_paused")
+    if m.get("lost_unpersisted"):
+        w.append("messages_lost")
+    return w
 
 
 # ---------------------------------------------------------------- gönderici
@@ -390,6 +446,7 @@ class DurableSender(threading.Thread):
                          "lost_unpersisted": 0, "memory_fallback_peak": 0}
         self.status_path, self.status_every, self._status_at = status_path, status_every, 0.0
         self._last_log = {}
+        self._ops, self._ops_at, self._warned = None, 0.0, set()
 
     def _set_token(self, token):
         if token:
@@ -498,6 +555,8 @@ class DurableSender(threading.Thread):
                         wait = min(wait, max(0.0, self.deadline - now))
                     self.cv.wait(min(wait, 1.0))
                 continue
+            if self.state == self.STATE_AUTH and self.token_provider is not None:
+                self._set_token(self.token_provider())       # FAZ 9: düzeltilmiş token İLK yeniden denemede kullanılır
             try:
                 if job[0] == "outbox":
                     self._deliver(job[1])
@@ -522,6 +581,8 @@ class DurableSender(threading.Thread):
         jpg, payload_json = frame
         payload = json.loads(payload_json)
         payload.update(cam=self.cid, name=self.name, events=[])
+        if isinstance(payload.get("meta"), dict):          # FAZ 9: dashboard'da kamera başına outbox durumu
+            payload["meta"]["outbox"] = self.ops_compact()
         status, _ = self._post("/ingest/frame", files={"frame": ("f.jpg", jpg, "image/jpeg")},
                                data={"payload": json.dumps(payload, ensure_ascii=False)})
         if status is not None and 200 <= status < 300:
@@ -605,8 +666,34 @@ class DurableSender(threading.Thread):
     def snapshot_stats(self) -> dict:
         if getattr(self, "_final", None) is not None:
             return self._final
-        return {**self.outbox.metrics(), **self.counters, "state": self.state,
-                "memory_fallback": len(self.unpersisted)}
+        m = {**self.outbox.metrics(), **self.counters, "state": self.state, "memory_fallback": len(self.unpersisted)}
+        m["warnings"] = outbox_warnings(m)
+        return m
+
+    def ops_compact(self, every: float = 2.0) -> dict:
+        """Kare meta'sına eklenen küçük özet (en fazla `every` sn'de bir hesaplanır; gövde/kimlik içermez)."""
+        now = time.monotonic()
+        if self._ops is None or now - self._ops_at >= every:
+            try:
+                m = self.snapshot_stats()
+            except (OutboxError, sqlite3.Error):
+                return {"state": self.state, "warnings": ["outbox_unreadable"]}
+            self._ops = {k: m.get(k) for k in ("pending_count", "pending_bytes", "oldest_pending_age_sec",
+                                               "dead_letter_count", "quarantine_count", "replay_success_count",
+                                               "capacity_used_ratio", "state", "warnings")}
+            self._ops_at = now
+        return self._ops
+
+    def _check_warnings(self, m: dict) -> None:
+        cur = set(m.get("warnings") or [])
+        for w in sorted(cur - self._warned):
+            ratio = 100 * (m.get("capacity_used_ratio") or 0)
+            self._log(f"[{self.cid}] OUTBOX UYARISI: {w} (bekleyen {m.get('pending_count')}, en eski "
+                      f"{m.get('oldest_pending_age_sec')} sn, kapasite %{ratio:.0f}, ölü {m.get('dead_letter_count')}, "
+                      f"karantina {m.get('quarantine_count')}). Mesaj silinmedi.")
+        for w in sorted(self._warned - cur):
+            self._log(f"[{self.cid}] outbox uyarısı kalktı: {w}")
+        self._warned = cur
 
     def _write_status(self, force=False):
         if self.status_path is None:
@@ -617,6 +704,7 @@ class DurableSender(threading.Thread):
         self._status_at = now
         try:
             data = {"camera_id": self.cid, "updated_at": protocol.utc_now_iso(), **self.snapshot_stats()}
+            self._check_warnings(data)
             tmp = Path(str(self.status_path) + ".tmp")
             tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
             os.replace(tmp, self.status_path)

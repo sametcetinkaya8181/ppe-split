@@ -68,6 +68,13 @@
     font-size: 13px; font-weight: 700; padding: 4px 10px;
   }
   .stage .badge:empty { display: none; }
+  .stage .health {
+    position: absolute; left: 0; bottom: 0; max-width: 70%; background: rgba(23,32,42,.85); color: #fff;
+    font-size: 12.5px; padding: 3px 9px;
+  }
+  .stage .health.warn { background: #8a5a00; }
+  .stage .health.down { background: var(--bad); font-weight: 700; }
+  .stage .health:empty { display: none; }
 
   .tally { display: flex; flex-wrap: wrap; gap: 0; margin-top: 12px; background: var(--panel); border: 1px solid var(--line); }
   .tally div { flex: 1 1 120px; padding: 10px 14px; border-right: 1px solid var(--line); }
@@ -339,12 +346,39 @@ function ensureTile(c) {
   img.alt = `${c.name} canlı video`;
   const tag = document.createElement("div"); tag.className = "tag";
   const badge = document.createElement("div"); badge.className = "badge";
-  el.append(img, tag, badge);
+  const health = document.createElement("div"); health.className = "health";
+  el.append(img, tag, badge, health);
   el.onclick = () => el.classList.toggle("wide");
   $("grid").append(el);
-  t = { el, img, tag, badge, url: null };
+  t = { el, img, tag, badge, health, url: null };
   tiles.set(c.id, t); byIdx.set(c.idx, t);
   return t;
+}
+
+/* FAZ 9: kamera izlenemiyorsa veya kişiler değerlendirilemiyorsa açıkça yazılır ("ihlal yok" ile karışmasın). */
+const WHY = { warmup: "gözlem birikiyor", too_small: "uzak/küçük", edge: "kadraj kenarı", low_conf: "düşük güven" };
+function camDown(c) {
+  const f = (c.meta.health && c.meta.health.flags) || [];
+  return c.meta.status === "waiting_for_detector" || f.includes("no_signal") || f.includes("camera_disconnected")
+    || f.includes("frozen") || f.includes("stalled");
+}
+function healthText(c) {
+  const h = c.meta.health, o = c.meta.outbox, f = (h && h.flags) || [];
+  if (c.meta.status === "waiting_for_detector") return ["down", "Kamera izlenemiyor: dedektörden görüntü gelmiyor"];
+  if (f.includes("no_signal")) return ["down", "Sinyal yok (boş kare) — bu kamera şu an izlenemiyor"];
+  if (f.includes("camera_disconnected")) return ["down", "Kamera bağlantısı koptu — yeniden bağlanılıyor"];
+  if (f.includes("frozen")) return ["down", "Görüntü donmuş olabilir — bu kamera güvenilir izlenemiyor"];
+  if (f.includes("stalled")) return ["down", "Kameradan kare gelmiyor (akış takıldı) — bu kamera izlenemiyor"];
+  const parts = [];
+  if (f.includes("lagging") && h.lag_sec != null) parts.push(`gecikme ${h.lag_sec.toFixed(1)} sn`);
+  const cov = h && h.coverage;
+  if (cov && cov.analyzing > 0) {
+    const why = Object.entries(cov.analyzing_by_reason || {}).filter(([, n]) => n > 0)
+      .map(([k, n]) => `${WHY[k] || k} ${n}`).join(", ");
+    parts.push(`${cov.analyzing} kişi değerlendirilemiyor${why ? " (" + why + ")" : ""}`);
+  }
+  if (o && o.warnings && o.warnings.length) parts.push(`olay kuyruğu: ${o.pending_count} bekleyen`);
+  return [parts.length ? "warn" : "", parts.join(" · ")];
 }
 
 function syncCam(c) {
@@ -353,8 +387,11 @@ function syncCam(c) {
   t.tag.textContent = waiting ? `${c.name} · bekleniyor…`
     : `${c.name} · video ${fmtT(s.t)} · ${m.width}×${m.height} · ${m.proc_fps} kare/sn`;
   t.el.classList.toggle("alarm", s.viol > 0);
-  t.el.classList.toggle("off", waiting);
+  t.el.classList.toggle("off", camDown(c));
   t.badge.textContent = s.viol > 0 ? `${s.viol} İHLAL` : "";
+  const [cls, txt] = healthText(c);
+  t.health.className = "health" + (cls ? " " + cls : "");
+  t.health.textContent = txt;
 }
 
 /* ---------- tek WebSocket ile tüm kareler ---------- */
@@ -444,7 +481,11 @@ async function tick() {
     const c = $("conn");
     let cls = "", txt;
     if (!d.cameras.length) { txt = "Dedektör bağlı değil (PC'de detector.py çalıştır)"; cls = "err"; }
-    else if (running) { txt = `Canlı · ${running}/${d.cameras.length} kamera`; cls = "live"; }
+    else if (running) {
+      const down = d.cameras.filter(camDown).length;
+      txt = `Canlı · ${running}/${d.cameras.length} kamera` + (down ? ` · ${down} kamera İZLENEMİYOR` : "");
+      cls = down ? "err" : "live";
+    }
     else if (d.cameras.every(x => x.meta.status === "finished")) { txt = "Videolar bitti"; }
     else if (d.cameras.some(x => x.meta.status === "error")) { txt = "Hata: " + d.cameras.find(x => x.meta.status === "error").meta.error; cls = "err"; }
     else { txt = "Dedektör bekleniyor…"; cls = "err"; }

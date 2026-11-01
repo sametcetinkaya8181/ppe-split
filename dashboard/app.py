@@ -19,6 +19,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy.exc import DBAPIError, IntegrityError, SQLAlchemyError
 
+import observability as ops
 from auth import routes as auth_routes
 from auth import security
 from auth.routes import require
@@ -26,7 +27,7 @@ from auth.security import AuthCtx
 from db import history
 from db import repository as repo
 from db.health import check_ready
-from db.session import get_session
+from db.session import get_engine, get_session
 from ingest import schemas, snapshots
 from ingest.redact import redact_source, redact_text
 
@@ -89,6 +90,9 @@ def _ingest_rejected(conn):
 # Makine token'ı middleware'de gövde okunmadan denetlenir; _auth handler içinde ikinci savunma hattıdır.
 app.add_middleware(security.SecurityMiddleware, csp=security.csp_for(STATIC / "index.html"),
                    ingest_tokens=lambda: (INGEST_TOKEN, INGEST_TOKEN_NEXT), on_ingest_reject=_ingest_rejected)
+# FAZ 9: en dıştaki katman — güvenlik retleri (400/401) dahil tüm HTTP isteklerini route şablonuyla sayar.
+app.add_middleware(ops.OpsMiddleware, static_routes=("/ingest/frame", "/ingest/events", "/ingest/report", "/healthz",
+                                                     "/health/ready", "/api/state", "/ws"))
 app.include_router(auth_routes.router)
 
 
@@ -165,6 +169,10 @@ def _db_failure(exc: Exception):
 
 def _safe_meta(meta: dict) -> dict:
     meta = dict(meta)
+    if "health" in meta:                          # FAZ 9: dedektör sağlık/kapsam özeti — yalnız beyaz liste
+        meta["health"] = ops.sanitize_health(meta["health"])
+    if "outbox" in meta:
+        meta["outbox"] = ops.sanitize_outbox(meta["outbox"])
     if "source" in meta:
         meta["source"] = redact_source(meta["source"])
     if meta.get("error"):
@@ -230,7 +238,7 @@ def _heartbeat(cam: Cam, run: dict):
 
 def _write_heartbeat(cam_id: str, name: str, run: dict):
     try:
-        with get_session() as s, s.begin():
+        with ops.REG.db_write_timer("heartbeat"), get_session() as s, s.begin():
             repo.heartbeat(s, camera_id=cam_id, name=name, source_kind=run["source_kind"],
                            run_id=run["run_id"], loop_no=run["loop_no"], fps=run["fps"], width=run["width"],
                            height=run["height"], source_label=run["source_label"], source_ref=run["source_ref"])
@@ -293,7 +301,7 @@ def _persist_events(cam: Cam, data: schemas.FramePayload, raw_events: list, run_
              "video_time_sec": ev.video_time_sec, "occurred_at": ev.occurred_at, "box": list(ev.box),
              "snapshot_path": paths.get(ev.event_id)} for ev, _ in uniq.values()]
     try:
-        with get_session() as s, s.begin():
+        with ops.REG.db_write_timer("events"), get_session() as s, s.begin():
             for cid in sorted({ev.camera_id for ev, _ in uniq.values()}):
                 repo.upsert_camera(s, cid, cam.name if cid == cam.id else cid,
                                    meta_run["source_kind"] if cid == cam.id else None)
@@ -312,6 +320,9 @@ def _persist_events(cam: Cam, data: schemas.FramePayload, raw_events: list, run_
         _http_error(409, str(exc))
     except (SQLAlchemyError, RuntimeError) as exc:
         _db_failure(exc)
+    ops.REG.count("events_received", len(uniq))
+    ops.REG.count("events_inserted", len(inserted))
+    ops.REG.count("events_duplicate_ignored", len(uniq) - len(inserted))
     return [(raw, paths.get(ev.event_id)) for ev, raw in uniq.values() if ev.event_id in inserted]
 
 
@@ -336,6 +347,7 @@ def ingest_frame(request: Request, frame: UploadFile = File(...), payload: str =
         cam.summary = data.summary if data.summary is not None else cam.summary
         cam.people = data.people
         cam.cond.notify_all()
+    ops.REG.count("frames_received")
     if data.events:
         for raw, path in _persist_events(cam, data, data.events):   # 2xx yalnızca commit sonrası
             target = cam if raw.get("camera_id") == cam.id else get_cam(raw.get("camera_id"))
@@ -354,7 +366,7 @@ def _persist_report(rep: schemas.ReportIn):
              "last_sec": schemas.tenth(r.last, "last"), "observations": r.n, "helmet_rate": r.helmet,
              "vest_rate": r.vest, "ever_violation": r.violation} for r in rep.report]
     try:
-        with get_session() as s, s.begin():
+        with ops.REG.db_write_timer("report"), get_session() as s, s.begin():
             repo.upsert_camera(s, rep.camera_id, redact_text(rep.name) if rep.name else rep.camera_id, rep.source_kind)
             repo.complete_run(s, run_id=rep.run_id, camera_id=rep.camera_id, run_status=rep.run_status,
                               started_at=rep.started_at, finished_at=rep.finished_at, loop_no=rep.loop,
@@ -365,6 +377,7 @@ def _persist_report(rep: schemas.ReportIn):
         _http_error(409, str(exc))
     except (SQLAlchemyError, RuntimeError) as exc:
         _db_failure(exc)
+    ops.REG.count("reports_persisted")
 
 
 @app.post("/ingest/report")
@@ -474,16 +487,25 @@ async def ws_feed(ws: WebSocket):
         if ctx is None or not ctx.at_least("supervisor"):
             reason = "auth_required" if ctx is None else "insufficient_role"
     if reason:
+        ops.REG.ws_event("rejected")
         await run_in_threadpool(security.audit, "ws_rejected", "denied", conn=ws,
                                 user_id=ctx.user_id if ctx else None, detail={"reason": reason},
                                 dedupe=f"ws:{reason}:{security.client_ip(ws)}")
         await ws.close(code=1008)
         return
     await ws.accept()
+    ops.REG.ws_event("accepted")
     sent = {}
     recheck = time.monotonic() + WS_RECHECK_SEC
+    # FAZ 9: istemcinin kapandığı ancak receive() ile öğrenilir; kare gelmeyen bir kamerada kopmuş bağlantının
+    # döngüsü (ve 15 sn'lik oturum sorgusu) aksi halde süresiz sürerdi. İstemciden gelen veri yok sayılır.
+    recv = asyncio.ensure_future(ws.receive())
     try:
         while True:
+            if recv.done():
+                if recv.cancelled() or recv.exception() is not None                         or recv.result().get("type") == "websocket.disconnect":
+                    return
+                recv = asyncio.ensure_future(ws.receive())
             if time.monotonic() >= recheck:
                 recheck = time.monotonic() + WS_RECHECK_SEC
                 if await _ws_auth(ws) is None:      # çıkış, iptal veya süre dolumu
@@ -497,11 +519,15 @@ async def ws_feed(ws: WebSocket):
                 if jpg is not None and sent.get(c.id) != no:
                     sent[c.id] = no
                     await ws.send_bytes(bytes([c.idx]) + jpg)
+                    ops.REG.ws_event("frames_sent")
                     any_sent = True
             if not any_sent:
                 await asyncio.sleep(0.03)
     except Exception:            # istemci ayrıldı
         pass
+    finally:
+        recv.cancel()
+        ops.REG.ws_event("closed")
 
 
 def _mjpeg(cam: Cam):
@@ -558,6 +584,34 @@ def report(ctx: AuthCtx = Depends(require("supervisor"))):
     with LOCK:
         cams = sorted((c for c in CAMS.values() if ctx.camera_ok(c.id)), key=lambda c: c.idx)
     return [{**r, "cam": c.id, "cam_name": c.name} for c in cams for r in c.report]
+
+
+_DB_STATUS = ops.Cached(lambda: ops.db_status(check_ready, get_engine), ttl=5.0)
+_STORAGE = ops.Cached(lambda: ops.storage_status(SNAP_DIR), ttl=30.0)
+
+
+@app.get("/api/ops/metrics")
+def ops_metrics(ctx: AuthCtx = Depends(require("admin"))):
+    """FAZ 9 işletim metrikleri (yalnız admin; JSON). Kamera başına canlı durum + dedektör sağlık/kapsam özeti +
+    outbox, HTTP/ingest/DB/WebSocket sayaçları, PostgreSQL ve snapshot deposu. Gizli bilgi/görüntü içermez."""
+    if not ops.ENABLED:
+        raise HTTPException(status_code=404, detail="metrikler kapalı (OPS_METRICS=0)")
+    now = time.time()
+    with LOCK:
+        cams = sorted(CAMS.values(), key=lambda c: c.idx)
+    cameras = []
+    for c in cams:
+        m = _meta(c)
+        cameras.append({"id": c.id, "status": m.get("status"),
+                        "last_frame_age_sec": round(now - c.last_ingest, 1) if c.last_ingest else None,
+                        "frames_received": c.frame_no, "proc_fps": m.get("proc_fps"), "source_fps": m.get("fps"),
+                        "width": m.get("width"), "height": m.get("height"),
+                        "people": c.summary.get("people"), "analyzing": c.summary.get("analyzing"),
+                        "health": m.get("health"), "outbox": m.get("outbox")})
+    return {"generated_at": _iso(datetime.now(timezone.utc)), **ops.REG.snapshot(), "cameras": cameras,
+            "postgres": _DB_STATUS.get(), "snapshot_storage": _STORAGE.get(),
+            "notes": ["sayaçlar dashboard süreci yeniden başlayınca sıfırlanır",
+                      "track sayısı benzersiz kişi sayısı değildir; ANALIZ uygun sayılmaz"]}
 
 
 @app.get("/healthz")

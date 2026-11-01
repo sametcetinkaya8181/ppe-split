@@ -1,0 +1,106 @@
+# FAZ 9 izole güvenilirlik/yük test yığını. Ana yığından (ppe-split) TAMAMEN ayrı: ayrı proje adı, ayrı PostgreSQL
+# volume'u, ayrı snapshot volume'u, ayrı port (yalnız 127.0.0.1). Arıza enjeksiyonu (DB durdurma, container restart)
+# YALNIZ bu yığına uygulanır; ana veritabanına ve outbox dosyalarına dokunulmaz.
+# Kullanım: python tools/reliability/stack.py up | down | status   (env dosyasını ve parolaları kendisi üretir)
+name: ppe-rel
+
+services:
+  db:
+    image: postgres:17@sha256:b8faeff7712663c2773a190181e1246e37e364b887611c04658c28b44e2408fe
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 2g
+    pids_limit: 512
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?}
+      POSTGRES_USER: ${POSTGRES_USER:?}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+    volumes:
+      - rel_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+    restart: "no"                       # arıza testinde durdurulan DB kendiliğinden kalkmasın
+
+  db-roles:
+    image: ppe-dashboard:faz9-rel
+    command: ["python", "-m", "db.roles", "setup"]
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      ADMIN_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      PPE_APP_PASSWORD: ${PPE_APP_PASSWORD:?}
+      PPE_MIGRATOR_PASSWORD: ${PPE_MIGRATOR_PASSWORD:?}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  migrate:
+    image: ppe-dashboard:faz9-rel
+    command: ["sh", "-c", "alembic upgrade head && python -m db.roles grants"]
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://ppe_migrator:${PPE_MIGRATOR_PASSWORD}@db:5432/${POSTGRES_DB}
+    depends_on:
+      db:
+        condition: service_healthy
+      db-roles:
+        condition: service_completed_successfully
+    restart: "no"
+
+  # Tek seferlik: adlandırılmış volume root'a ait oluşur; ayrıcalıksız dashboard (uid 10001) yazabilsin.
+  data-init:
+    image: ppe-dashboard:faz9-rel
+    user: "0:0"
+    command: ["sh", "-c", "mkdir -p /data/snapshots && chown -R 10001:10001 /data"]
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN"]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - rel_data:/data
+    restart: "no"
+
+  dashboard:
+    build: ../../dashboard
+    image: ppe-dashboard:faz9-rel
+    ports:
+      - "127.0.0.1:${REL_PORT:-8100}:8000"
+    volumes:
+      - rel_data:/data
+    read_only: true
+    tmpfs: ["/tmp:size=64m"]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 1g
+    cpus: 2
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    environment:
+      DATA_DIR: /data
+      DATABASE_URL: postgresql+psycopg://ppe_app:${PPE_APP_PASSWORD}@db:5432/${POSTGRES_DB}
+      INGEST_TOKEN: ${INGEST_TOKEN:?}
+      ACTIVE_WINDOW_SEC: "90"
+      SECURITY_PROFILE: local
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      data-init:
+        condition: service_completed_successfully
+    restart: "no"
+
+volumes:
+  rel_pgdata:
+  rel_data:

@@ -24,6 +24,9 @@ _load_env()
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")   # desteklenmeyen işlemler CPU'ya düşsün
 os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")           # OpenCV/FFmpeg gürültüsünü kıs
 os.environ.setdefault("OPENCV_FFMPEG_LOGLEVEL", "-8")
+# FAZ 9 gizlilik: Ultralytics anonim kullanım analitiği (Google Analytics) ve çevrimiçi otomatik paket kurulumu
+# kapalı. Ultralytics bu değişkeni içe aktarılırken okur; açmak için detector/.env içine YOLO_OFFLINE=0 yazın.
+os.environ.setdefault("YOLO_OFFLINE", "1")
 
 import base64
 import logging
@@ -41,6 +44,7 @@ import detector_env
 import outbox as outbox_mod
 import ppe_core as core
 import protocol
+import telemetry
 
 MODEL_PATH = os.getenv("MODEL_PATH", "models/best.pt")
 DASHBOARD_URL = os.getenv("DASHBOARD_URL", "http://localhost:8000").rstrip("/")
@@ -199,7 +203,9 @@ def run_once(model, cid, name, source, sender, loop_no, stop=None):
         fps = 25.0
     W, H = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     cap.release()
+    tel = telemetry.for_camera(cid, device=DEVICE)
     if W == 0:
+        tel.open_failed("source_open_failed")
         raise RuntimeError(f"Kaynak açılamadı (OpenCV akışı açamadı): {shown}")
     print(f"[{cid}] Açıldı: {W}x{H} @ {fps:.0f} fps, model çalışıyor…", flush=True)
 
@@ -213,11 +219,13 @@ def run_once(model, cid, name, source, sender, loop_no, stop=None):
     tracker = protocol.IncidentTracker()         # incident durumu run'a özel
     extra = {"stream_buffer": True} if (BUFFER and not is_file) else {}   # canlı akış/kamera: kare kaybını önle
     run_status, error, progress = "error", None, {"t": 0.0}
+    tel.run_started(run_id, loop=loop_no, source_kind=kind, fps=fps, width=W, height=H, vid_stride=VID_STRIDE)
     try:
         results = model.track(source=src, stream=True, persist=True, tracker=TRACKER,
                               conf=CONF, imgsz=IMGSZ, device=DEVICE, vid_stride=VID_STRIDE,
                               verbose=False, **extra)
-        _process(model, cid, results, fps, W, H, is_file, meta, monitor, tracker, sender, run_id, stop, progress)
+        _process(model, cid, results, fps, W, H, is_file, meta, monitor, tracker, sender, run_id, stop, progress,
+                 tel)
         run_status = "interrupted" if (stop is not None and stop.is_set()) else "finished"
     except KeyboardInterrupt:
         run_status = "interrupted"
@@ -227,6 +235,7 @@ def run_once(model, cid, name, source, sender, loop_no, stop=None):
         raise
     finally:
         t = progress["t"]
+        tel.run_ended(run_status, error)
         tracker.close_all("run_end", t)          # açık kalan incident'lar: sahte end üretilmez, raporda listelenir
         report = [{"pid": int(pid), "first": round(s["first"], 1), "last": round(s["last"], 1),
                    "n": s["n"], "helmet": round(100 * s["h"] / s["n"]),
@@ -241,10 +250,17 @@ def run_once(model, cid, name, source, sender, loop_no, stop=None):
                               "unclosed_overflow": tracker.unclosed_overflow, "orphan_events": tracker.orphans})
 
 
-def _process(model, cid, results, fps, W, H, is_file, meta, monitor, tracker, sender, run_id, stop, progress):
-    """Kare döngüsü (YOLO + ByteTrack + PPEMonitor). Karar mantığı değişmedi; olaylar burada kimlik kazanır."""
+def _process(model, cid, results, fps, W, H, is_file, meta, monitor, tracker, sender, run_id, stop, progress,
+             tel=None):
+    """Kare döngüsü (YOLO + ByteTrack + PPEMonitor). Karar mantığı değişmedi; olaylar burada kimlik kazanır.
+    FAZ 9: aşama süreleri ve kapsam telemetry'ye yazılır (yalnız ölçüm; kararları etkilemez)."""
     wall0, tick, n_tick = time.time(), time.time(), 0
+    tel = tel or telemetry.for_camera(cid, device=DEVICE)
+    stage = {}
+    pc = time.perf_counter
+    loop_end = pc()
     for idx, r in enumerate(results, start=1):
+        got = pc()
         if stop is not None and stop.is_set():
             return
         t = idx * VID_STRIDE / fps
@@ -270,9 +286,13 @@ def _process(model, cid, results, fps, W, H, is_file, meta, monitor, tracker, se
                   f"takip_id={'var' if (has and b.id is not None) else 'YOK'} "
                   f"kişi={len(persons)}", flush=True)
 
+        telemetry.install_tracker_timer(model, stage)     # ilk kareden sonra: ByteTrack süresi (bir sonraki kare)
+        s0 = pc()
         helmet_map = core.match_items(persons, helmets, core.head_region)
         vest_map = core.match_items(persons, vests, core.torso_region)
+        s1 = pc()
         statuses, raw_events = monitor.update(t, (W, H), persons, helmet_map, vest_map)
+        s2 = pc()
 
         events = []
         for e in raw_events:                     # kimlikler olay doğduğu anda verilir; retry'da değişmez
@@ -296,22 +316,38 @@ def _process(model, cid, results, fps, W, H, is_file, meta, monitor, tracker, se
                    "analyzing": sum(s[0] == "ANALIZ" for s in vals),
                    "raw_helmets": len(helmets), "raw_vests": len(vests)}
 
+        sp = getattr(r, "speed", None) or {}
+        stage_ms = {"wait_ms": (got - loop_end) * 1e3, "preprocess_ms": sp.get("preprocess"),
+                    "inference_ms": sp.get("inference"), "postprocess_ms": sp.get("postprocess"),
+                    "bytetrack_ms": stage.pop("bytetrack_ms", None),
+                    "match_ms": (s1 - s0) * 1e3, "monitor_ms": (s2 - s1) * 1e3}
+        tel.frame(t=t, frame=r.orig_img, persons=persons, statuses=statuses, stage_ms={}, events=events)
+
+        s3 = pc()
         jpg = encode(draw(frame, persons, statuses, helmet_map, vest_map))
+        stage_ms["render_ms"] = (pc() - s3) * 1e3
 
         n_tick += 1
         now = time.time()
         if now - tick >= 1.0:
             meta["proc_fps"] = round(n_tick / (now - tick), 1)
+            meta["health"] = tel.compact()          # saniyede bir: dashboard kapsam/sağlık göstergesi
             tick, n_tick = now, 0
 
         # jpg None olsa da (kodlama hatası) olaylar kuyruğa girer
+        s4 = pc()
         sender.submit(jpg, {"meta": dict(meta), "summary": summary, "people": people,
                             "run_id": run_id, "camera_id": cid}, events)
+        end = pc()
+        stage_ms["submit_ms"] = (end - s4) * 1e3
+        stage_ms["frame_ms"] = (end - loop_end) * 1e3   # kare döngüsü: çözme+YOLO+takip+karar+çizim+kuyruk
+        tel.timings_add(stage_ms)
 
         if is_file:                              # dosyayı gerçek zamanlı hızda oynat
             ahead = wall0 + t - time.time()
             if ahead > 0:
                 time.sleep(ahead)
+        loop_end = pc()
 
 
 def stream_worker(cid, name, source, delay, stop):
@@ -319,8 +355,12 @@ def stream_worker(cid, name, source, delay, stop):
         return
     if os.getenv("VERBOSE", "0") != "1":         # "Waiting for stream" gibi zararsız uyarıları gizle
         logging.getLogger("ultralytics").setLevel(logging.ERROR)
+    tel = telemetry.for_camera(cid, device=DEVICE)
+    tel.set_output(outbox_mod.path_for(cid).with_suffix(".health.json"))   # gizli bilgi/görüntü içermez
+    tel.start_flusher()                          # kare gelmese de (donmuş akış) sağlık dosyası güncellenir
     sender = _make_sender(cid, name)
     if sender is None:                           # outbox kilitli/bozuk: bu kamera başlatılmaz (diğerleri sürer)
+        tel.open_failed("outbox_unavailable")
         return
     sender.start()
     try:
@@ -336,6 +376,7 @@ def stream_worker(cid, name, source, delay, stop):
                 run_once(model, cid, name, source, sender, loop_no, stop)
             except Exception as exc:             # noqa: BLE001
                 print(f"[{cid}] HATA: {protocol.redact_text(exc)}", flush=True)
+                tel.reconnecting()
                 if stop.wait(3):                 # RTSP kopması vb. için yeniden dene
                     break
                 continue

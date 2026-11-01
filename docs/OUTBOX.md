@@ -63,6 +63,14 @@ sırada çökerse kaybolur — `memory_fallback` metriği). Hiçbir kritik mesaj
 `dead_letter_count`, `quarantine_count`, `disk_write_errors`, `evicted_ongoing`, `dropped_ongoing_full`,
 `high_watermark`, `state` (`ok`/`backoff`/`paused_auth`/`paused_incompatible`), `memory_fallback`, gönderim sayaçları.
 
+FAZ 9 ekleri: `replay_success_count` (önceki oturumdan kalıp bu oturumda teslim edilen), `capacity_used_ratio`,
+`db_bytes`, `wal_bytes` (WAL `journal_size_limit` ile `OUTBOX_WAL_LIMIT_BYTES`'a kırpılır), `disk_free_bytes`,
+`warnings`: `high_watermark`, `pending_age` (`OUTBOX_AGE_WARN_SEC`), `dead_letters`, `quarantine`,
+`disk_write_errors`, `disk_free_low` (`OUTBOX_MIN_FREE_BYTES`), `memory_fallback`, `delivery_paused`,
+`messages_lost`. Yeni uyarı loga bir kez `OUTBOX UYARISI: …` olarak yazılır, kalkınca bildirilir; kare meta'sıyla
+dashboard'a gider (canlı karoda "olay kuyruğu: N bekleyen", `/api/ops/metrics`). **Uyarılar hiçbir mesajı silmez
+veya düşürmez.**
+
 ## Komutlar (detector klasöründe, venv etkin)
 
 ```powershell

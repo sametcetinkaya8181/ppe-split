@@ -152,6 +152,28 @@ await check("Canlı İzleme: WebSocket ile gelen kare tarayıcıda görüntülen
   await shot("01_canli_masaustu");
   return "blob JPEG çizildi";
 });
+await check("Canlı İzleme (FAZ 9): izlenemeyen kamera ve değerlendirilemeyen kişiler açıkça yazılıyor", async () => {
+  const post = async meta => {
+    const fd = new FormData();
+    fd.append("frame", new Blob([new Uint8Array([255, 216, 255, 217])], { type: "image/jpeg" }), "f.jpg");
+    fd.append("payload", JSON.stringify({ cam: "cam9", name: "Canlı test", meta: { status: "running", width: 8, height: 8,
+      proc_fps: 1, source: "videos/x.mp4", ...meta }, summary: { t: 1, people: 2, ok: 0, viol: 0, analyzing: 2 }, people: [] }));
+    assert((await fetch(FULL + "/ingest/frame", { method: "POST", body: fd })).ok, "kare gönderilemedi");
+  };
+  const tile = `[...document.querySelectorAll("#grid .stage")].find(t => t.querySelector(".tag").textContent.startsWith("Canlı test"))`;
+  await post({ health: { state: "connected", flags: ["no_signal"], coverage: { visible: 0, analyzing: 0 } } });
+  await waitFor(`(${tile})?.querySelector(".health").textContent.includes("izlenemiyor")`);
+  const down = await ev(`const t = ${tile}; return { h: t.querySelector(".health").textContent, cls: t.querySelector(".health").className,
+    off: t.classList.contains("off"), conn: document.getElementById("connText").textContent };`);
+  assert(down.cls.includes("down") && down.off && down.conn.includes("İZLENEMİYOR"), JSON.stringify(down));
+  await post({ health: { state: "connected", flags: ["unevaluated_persons"], coverage: { visible: 2, decided: 0, analyzing: 2,
+    analyzing_by_reason: { too_small: 1, edge: 1 } } } });
+  await waitFor(`(${tile})?.querySelector(".health").textContent.includes("değerlendirilemiyor")`);
+  const cov = await ev(`const t = ${tile}; return { h: t.querySelector(".health").textContent, off: t.classList.contains("off") };`);
+  assert(cov.h.includes("2 kişi değerlendirilemiyor") && cov.h.includes("uzak/küçük 1") && cov.h.includes("kadraj kenarı 1")
+    && !cov.off, JSON.stringify(cov));
+  return `${down.h} | ${cov.h}`;
+});
 
 await ev(`document.getElementById("tab-history").click(); return true;`);
 await idle("hStatus");
