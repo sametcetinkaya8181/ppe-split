@@ -151,3 +151,11 @@ INCOMPLETE" olarak raporlanır; `docker logs ppe-rel-dashboard-1 > memprobe_part
 alınır; aynı komutla **baştan** yeniden başlatılır (süreler birleştirilmez — kesintisiz 24 saat gerekir).
 Doğrulama: `result.json` → `delivery`, `runs_by_camera`, `memprobe.summary`; zaman serisi `samples.csv`
 (`dash_cg_anon_mb`, `dash_cg_file_mb`, `dash_cg_kernel_mb` ayrı sütunlar).
+
+## 10. FAZ 10-A.4 — Tekrarlanabilir video taban çizgisi
+
+`tools/reliability/baseline_eval.py run` (ayrıntı: `docs/PHASE_10A4_BASELINE_REPORT.md` §4): V1–V3, VID_STRIDE=2,
+üretim karar zincirinin çevrimdışı izi + gerçek `detector.py` ile uçtan uca teslim, kendi izole yığınında
+(`REL_PROJECT=ppe-eval`, 127.0.0.1:8200; ppe-rel ve ana yığına dokunmaz; önce/sonra izolasyon kontrolü). Ground-truth
+yoksa doğruluk metrikleri `INSUFFICIENT_GROUND_TRUTH`; alarmlar insan inceleme kaydı olmadan `UNREVIEWED`. Model veya
+karar değişikliği önerileri `--previous <taban result.json>` ile karşılaştırmalı koşulur.
