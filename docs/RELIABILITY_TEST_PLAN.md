@@ -112,3 +112,42 @@ görüntü). İzole yığın volume'ları test sonrası **silinmez**; temizlemek
 Gerçek RTSP kamera (kimlik doğrulama hatası, RTSP `timeout`/`rw_timeout` davranışı, UDP/TCP taşıma) bu araçlarla
 **test edilmez**; sahada gerçek kamerayla ayrıca yapılmalıdır (BLOCKED: erişim yok). 24 saatlik soak için araç hazır;
 sonuç ancak gerçekten 24 saat koşulduğunda yazılır.
+
+## 9. FAZ 10-A.1 ekleri — bellek katmanları ve 24 saatlik soak
+
+| Araç | Amaç | Komut |
+|---|---|---|
+| `tools/reliability/memboot.py` | Dashboard bellek probu (yalnız izole yığın): uvicorn'u Dockerfile ile aynı ayarlarla başlatır; aynı süreçte RSS/RssAnon, glibc `mallinfo2` (kullanımda / boş / mmap), Python blokları, GC sayıları, tip histogramı, uygulama yapılarının boyutları, SQLAlchemy derlenmiş ifade önbelleği (ve hangi ifadelerin girdi ürettiği), isteğe bağlı tracemalloc. Satırlar container log'una `MEMPROBE {json}` | `memtest.py` / `soak.py --memprobe` başlatır |
+| `tools/reliability/memtest.py` | Kontrollü, GPU'suz, tekrarlanabilir bellek testi: gerçek outbox/DurableSender kullanan sentetik kameralar (`eventgen.py --frame-video`, gerçek video kareleri 640 px / JPEG 80), operatör taklidi (`/ws` + `/api/state` 0.7 sn + `/api/ops/metrics` 30 sn); cgroup katmanları (anon / file / kernel) ayrı | `python tools/reliability/memtest.py --minutes 90 --label base` (`--env MALLOC_ARENA_MAX=2`, `--trace 8`) |
+| `tools/reliability/gpu_parity.py` | İki venv'de gerçek best.pt + ByteTrack + PPEMonitor çıktısının kare kare karşılaştırması (paket değişikliği model davranışını değiştirdi mi?) | `<venv>\Scripts\python.exe tools/reliability/gpu_parity.py --out A.json`, `--compare A.json B.json` |
+
+**Ölçüm kuralı:** `docker stats` belleği = cgroup belleği − `inactive_file`; kernel slab'ı (dosya dentry/inode
+önbelleği) ve aktif sayfa önbelleğini içerir. Sızıntı kararı yalnız **anon** (süreç) belleği ve Python/ayırıcı
+katmanlarından verilir; dosya önbelleği ve slab geri kazanılabilir kernel belleğidir.
+
+### 24 saatlik soak prosedürü (yeniden başlatılabilir, doğrulanabilir)
+
+Ön koşullar (başlamadan kontrol edilir, sonuç `result.json`'a yazılır):
+1. Dizüstü AC güçte; AC'de uyku/hazırda bekletme kapalı (`powercfg /q SCHEME_CURRENT SUB_SLEEP`); kapak kapatılmaz.
+2. Diskte ≥ 10 GB boş alan (24 saatte ham çıktı + outbox + izole DB ≈ 1–2 GB).
+3. Boş RAM ≥ 3 GB önerilir; ağır uygulamalar kapatılır. `soak.py` bellek koruması (boş RAM < eşik veya sayfa
+   dosyası > %90, 10 ardışık örnek) testi **durdurur** ve `memory_guard` yazar — bu durumda sonuç INCOMPLETE'tir.
+4. İzole yığın güncel imajla: `docker compose -p ppe-rel -f tools/reliability/docker-compose.reliability.yml
+   --env-file tools/reliability/output/rel.env build dashboard`. Ana yığına (ppe-split) dokunulmaz.
+5. Başka GPU/dedektör testi çalışmıyor.
+
+Çalıştırma: `python tools/reliability/soak.py --hours 24 --memprobe` (arka planda; çıktı
+`tools/reliability/output/<UTC>_soak24h/`). Örnekler `samples.jsonl`'a anlık yazılır; dashboard prob satırları
+container log'unda birikir.
+
+PASS ölçütü (hepsi): `measured_sec` ≥ 86 400; `memory_guard` ve `detector_exit` yok; teslim `lost` = 0,
+`duplicates` = 0, `pending_after_stop` = 0, `dead_after_stop` = 0; her ağ arızası doğru durumla
+(`disconnected/...`) kayıtlı; dashboard log'unda traceback 0; dedektör tanıtıcı/thread sayısı ilk saatten sonra
+sabit; **dashboard anon belleği** son 12 saatte plato (eğim < 0,5 MB/sa) ve `sa_compiled_cache` sabit.
+Bunlardan biri sağlanmazsa sonuç FAIL veya INCOMPLETE yazılır; kısmi süre "24 saat" olarak raporlanmaz.
+
+Yarıda kalırsa (güç kesintisi, yeniden başlatma, bellek koruması): kısmi `samples.jsonl` korunur ve "N saat,
+INCOMPLETE" olarak raporlanır; `docker logs ppe-rel-dashboard-1 > memprobe_partial.log` ile prob satırları
+alınır; aynı komutla **baştan** yeniden başlatılır (süreler birleştirilmez — kesintisiz 24 saat gerekir).
+Doğrulama: `result.json` → `delivery`, `runs_by_camera`, `memprobe.summary`; zaman serisi `samples.csv`
+(`dash_cg_anon_mb`, `dash_cg_file_mb`, `dash_cg_kernel_mb` ayrı sütunlar).

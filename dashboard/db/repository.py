@@ -4,7 +4,11 @@ Fonksiyonlar çağıranın açtığı Session/transaction içinde çalışır; c
 (her HTTP isteği kendi Session'ını açar, Session thread'ler arasında paylaşılmaz).
 Çelişkili tekrar (aynı kimlik, farklı içerik) -> Conflict; çağıran transaction'ı geri alır ve 409 döner.
 Kilit sırası: kameralar, run'lar, incident'lar ve olaylar kimliğe göre sıralı yazılır (deadlock riskini azaltır;
-yine de oluşursa çağıran 503 ile retry ettirir)."""
+yine de oluşursa çağıran 503 ile retry ettirir).
+Çok satırlı yazımlar executemany ile yapılır (`s.execute(stmt, rows)`; SQLAlchemy insertmanyvalues). PostgreSQL
+upsert ifadeleri önbelleğe alınmadığından `values(rows)` her çağrıda satır başına ~5 KB'lık çok satırlı ifadeyi
+yeniden derliyordu (5000 kişilik raporda ~51 MB geçici tepe, ~6 sn); executemany tek satırlık ifadeyi derler
+(~15 MB, <1 sn; FAZ 10-A.1 ölçümü). Satır sırası (kilit sırası), ON CONFLICT ve RETURNING davranışı aynıdır."""
 from datetime import datetime
 from decimal import Decimal
 
@@ -69,7 +73,8 @@ def upsert_incidents(s: Session, rows: list[dict]) -> None:
     if not rows:
         return
     rows = sorted(rows, key=lambda r: str(r["id"]))
-    s.execute(insert(Incident).values(rows).on_conflict_do_nothing(index_elements=[Incident.id]))
+    t = Incident.__table__
+    s.execute(insert(t).on_conflict_do_nothing(index_elements=[t.c.id]), rows)
     have = {r.id: (r.run_id, r.camera_id, r.pid) for r in s.execute(
         select(Incident.id, Incident.run_id, Incident.camera_id, Incident.pid)
         .where(Incident.id.in_([r["id"] for r in rows])))}
@@ -92,10 +97,9 @@ def insert_events(s: Session, rows: list[dict], identities: dict) -> set:
     if not rows:
         return set()
     rows = sorted(rows, key=lambda r: str(r["event_id"]))
-    stmt = (insert(ViolationEvent).values(rows)
-            .on_conflict_do_nothing(index_elements=[ViolationEvent.event_id])
-            .returning(ViolationEvent.event_id))
-    inserted = set(s.execute(stmt).scalars())
+    t = ViolationEvent.__table__
+    stmt = insert(t).on_conflict_do_nothing(index_elements=[t.c.event_id]).returning(t.c.event_id)
+    inserted = set(s.execute(stmt, rows).scalars())
     dups = [r["event_id"] for r in rows if r["event_id"] not in inserted]
     if dups:
         for r in s.execute(select(ViolationEvent).where(ViolationEvent.event_id.in_(dups))).scalars():
@@ -127,12 +131,14 @@ def complete_run(s: Session, *, run_id, camera_id: str, run_status: str, started
         status=run_status, finished_at=finished_at, report_metadata=metadata,
         started_at=func.least(DetectorRun.started_at, started_at, finished_at)))
     if rows:
-        stmt = insert(PersonRunReport).values(sorted(rows, key=lambda r: r["pid"]))
+        t = PersonRunReport.__table__
+        stmt = insert(t)
         ex = stmt.excluded
         s.execute(stmt.on_conflict_do_update(
-            index_elements=[PersonRunReport.run_id, PersonRunReport.pid],
+            index_elements=[t.c.run_id, t.c.pid],
             set_={c: getattr(ex, c) for c in ("first_sec", "last_sec", "observations", "helmet_rate", "vest_rate",
-                                              "ever_violation")} | {"updated_at": func.now()}))
+                                              "ever_violation")} | {"updated_at": func.now()}),
+            sorted(rows, key=lambda r: r["pid"]))
     return True
 
 

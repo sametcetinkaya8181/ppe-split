@@ -20,7 +20,8 @@ COMPOSE = HERE / "docker-compose.reliability.yml"
 ENV_FILE = OUT / "rel.env"
 PROJECT = "ppe-rel"
 DETECTOR = ROOT / "detector"
-PY = DETECTOR / ".venv" / "Scripts" / "python.exe"
+# REL_DETECTOR_PY: dedektörü başka (ör. izole güvenlik testi) venv'iyle koşturmak için
+PY = Path(os.getenv("REL_DETECTOR_PY", DETECTOR / ".venv" / "Scripts" / "python.exe"))
 if not PY.exists():
     PY = Path(sys.executable)
 VIDEOS = {"V1": DETECTOR / "videos" / "16533594_1920_1080_25fps.mp4",

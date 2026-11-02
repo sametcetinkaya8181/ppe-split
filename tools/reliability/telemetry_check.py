@@ -11,7 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 DET = ROOT / "detector"
-PY = DET / ".venv" / "Scripts" / "python.exe"
+PY = Path(os.getenv("REL_DETECTOR_PY", DET / ".venv" / "Scripts" / "python.exe"))
 VIDEO = DET / "videos" / "16533594_1920_1080_25fps.mp4"
 
 CHILD = r'''

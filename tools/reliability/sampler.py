@@ -39,6 +39,14 @@ def docker_stats() -> dict:
             out[f"{key}_cpu"] = float(d["CPUPerc"].rstrip("%") or 0)
             out[f"{key}_mem_mb"] = _mb(d["MemUsage"].split("/")[0].strip())
             out[f"{key}_pids"] = int(d["PIDs"])
+        # FAZ 10-A.1: docker stats = cgroup belleği - inactive_file; süreç belleği (anon) ile geri kazanılabilir sayfa
+        # önbelleğini (file; ör. yazılan snapshot JPEG'leri) ayrı kaydet
+        r = subprocess.run(["docker", "exec", c.container("dashboard"), "cat", "/sys/fs/cgroup/memory.stat"],
+                           capture_output=True, text=True, timeout=20)
+        stat = dict(line.split() for line in r.stdout.splitlines() if len(line.split()) == 2)
+        for k in ("anon", "file", "kernel"):
+            if k in stat:
+                out[f"dash_cg_{k}_mb"] = round(int(stat[k]) / 2**20, 2)
         return out
     except Exception as exc:                                  # noqa: BLE001
         return {"docker_error": type(exc).__name__}
@@ -212,7 +220,8 @@ class Sampler(threading.Thread):
 
 FLAT = ("ts", "elapsed_sec", "det_procs", "det_rss_mb", "det_cpu", "det_handles", "det_threads", "gpu_util",
         "gpu_mem_used_mb", "gpu_temp_c", "gpu_power_w", "sys_cpu", "sys_mem_used_mb", "state_ms", "outbox_dir_bytes",
-        "dash_cpu", "dash_mem_mb", "dash_pids", "db_cpu", "db_mem_mb", "pg_conns", "pg_db_bytes", "pg_events")
+        "dash_cpu", "dash_mem_mb", "dash_cg_anon_mb", "dash_cg_file_mb", "dash_cg_kernel_mb", "dash_pids", "db_cpu",
+        "db_mem_mb", "pg_conns", "pg_db_bytes", "pg_events")
 
 
 def write_csv(out: Path, rows: list) -> None:
@@ -258,7 +267,7 @@ def summarize(rows: list, skip_sec: float = 0.0) -> dict:
            "last_ts": rows[-1]["ts"]}
     for k in ("det_rss_mb", "det_cpu", "det_handles", "det_threads", "gpu_util", "gpu_mem_used_mb", "sys_cpu",
               "state_ms", "dash_mem_mb", "dash_cpu", "db_mem_mb", "pg_conns", "outbox_dir_bytes", "gpu_temp_c",
-              "sys_mem_used_mb", "dash_pids", "pg_db_bytes"):
+              "sys_mem_used_mb", "dash_pids", "pg_db_bytes", "dash_cg_anon_mb", "dash_cg_file_mb", "dash_cg_kernel_mb"):
         vals = [r.get(k) for r in rows]
         if any(v is not None for v in vals):
             out[k] = {"p50": _pct(vals, 50), "p95": _pct(vals, 95), "max": max(v for v in vals if v is not None),

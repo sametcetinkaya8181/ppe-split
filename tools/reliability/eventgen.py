@@ -42,6 +42,28 @@ def jpeg(seed: int) -> bytes:
     return cv2.imencode(".jpg", img)[1].tobytes()
 
 
+def video_frames(path: str, width: int, n: int = 48, quality: int = 80) -> list:
+    """Bellek testleri için gerçekçi boyutta canlı kareler: videodan eşit aralıklı n kare, dedektörle aynı
+    küçültme (STREAM_WIDTH) ve JPEG kalitesi. Kareler yalnız gönderilir; diske yazılmaz."""
+    import cv2
+    cap = cv2.VideoCapture(path)
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or n
+    out = []
+    for i in range(n):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, i * total // n)
+        ok, img = cap.read()
+        if not ok:
+            break
+        h, w = img.shape[:2]
+        if w > width:
+            img = cv2.resize(img, (width, int(h * width / w)))
+        out.append(cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, quality])[1].tobytes())
+    cap.release()
+    if not out:
+        raise RuntimeError(f"videodan kare okunamadı: {path}")
+    return out
+
+
 class Ledger:
     def __init__(self, path: Path):
         self.f = open(path, "a", encoding="utf-8")
@@ -75,7 +97,10 @@ def main(argv=None) -> int:
     ap.add_argument("--persons", type=int, default=3)
     ap.add_argument("--period", type=float, default=6)
     ap.add_argument("--snapshot", action="store_true", help="start olaylarına sentetik küçük JPEG ekle")
+    ap.add_argument("--frame-video", help="canlı kareleri bu videodan üret (gerçekçi boyut; bellek testleri)")
+    ap.add_argument("--frame-width", type=int, default=640)
     a = ap.parse_args(argv)
+    frames = video_frames(a.frame_video, a.frame_width) if a.frame_video else [jpeg(i) for i in range(7)]
     url = os.environ["DASHBOARD_URL"]
     o = ob.Outbox(ob.path_for(a.camera, Path(a.outbox)), a.camera,
                   max_items=int(os.getenv("OUTBOX_MAX_ITEMS", 100_000)),
@@ -116,7 +141,7 @@ def main(argv=None) -> int:
                     meta = {"source": "synthetic", "source_kind": "other", "run_id": run_id, "fps": a.fps,
                             "width": W, "height": H, "status": "running", "error": None, "loop": loop,
                             "proc_fps": a.fps}
-                    sender.submit(jpeg(idx % 7), {"meta": meta, "summary": {"t": round(t, 1),
+                    sender.submit(frames[idx % len(frames)], {"meta": meta, "summary": {"t": round(t, 1),
                                   "people": len(persons), "ok": 0, "viol": 0, "analyzing": 0},
                                   "people": [], "run_id": run_id, "camera_id": a.camera}, events)
                     durable = len(sender.unpersisted) == before
@@ -129,7 +154,12 @@ def main(argv=None) -> int:
                 raise
             finally:
                 tracker.close_all("run_end", t)
-                sender.submit_report({"cam": a.camera, "name": f"Sentetik {a.camera}", "report": [],
+                # detector.py ile aynı kişi satırı biçimi (dashboard rapor yolu gerçek satırlarla çalışsın)
+                report = [{"pid": int(pid), "first": round(s["first"], 1), "last": round(s["last"], 1),
+                           "n": s["n"], "helmet": round(100 * s["h"] / s["n"]),
+                           "vest": round(100 * s["v"] / s["n"]), "violation": s["ever_violation"]}
+                          for pid, s in sorted(mon.stats.items()) if s["n"] > 0]
+                sender.submit_report({"cam": a.camera, "name": f"Sentetik {a.camera}", "report": report,
                                       "status": status, "run_id": run_id, "camera_id": a.camera,
                                       "run_status": status, "loop": loop, "source_kind": "other",
                                       "started_at": started, "finished_at": protocol.utc_now_iso(),

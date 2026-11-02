@@ -4,7 +4,8 @@ izole ppe-rel yığını. Ağ kamerasına periyodik arıza: her `--fault-every` 
 durumları, yeniden bağlanma sayaçları. Gerçek RTSP kamera DEĞİLDİR.
 
   python tools/reliability/soak.py --hours 4
-  python tools/reliability/soak.py --hours 24        (hazır; 24 saat gerçekten koşmadan sonuç yazılmaz)"""
+  python tools/reliability/soak.py --hours 24        (hazır; 24 saat gerçekten koşmadan sonuç yazılmaz)
+  python tools/reliability/soak.py --hours 24 --memprobe   (FAZ 10-A.1: dashboard bellek katmanları ayrı)"""
 import argparse
 import json
 import re
@@ -20,6 +21,7 @@ import common as c                                     # noqa: E402
 import stress                                          # noqa: E402
 from camsim import CameraSim                           # noqa: E402
 from sampler import Sampler, summarize, write_csv      # noqa: E402
+import memtest                                         # noqa: E402
 
 CAMS = [("relc1", "V1"), ("relc2", "V2"), ("relc3", "V1")]
 NET = ("relnet", "V2", 9150)
@@ -49,6 +51,26 @@ class FaultSchedule(threading.Thread):
             self._do("freeze", self.freeze, self.sim.freeze, self.sim.unfreeze)
 
 
+def collect_memprobe(sd: Path, skip_sec: float) -> dict:
+    """Dashboard container log'undaki MEMPROBE satırları -> memprobe.jsonl + katman bazlı eğim özeti."""
+    import subprocess
+    logs = subprocess.run(["docker", "logs", c.container("dashboard")], capture_output=True, text=True,
+                          encoding="utf-8", errors="replace")
+    probe = []
+    with open(sd / "memprobe.jsonl", "w", encoding="utf-8") as f:
+        for line in (logs.stdout + logs.stderr).splitlines():
+            if line.startswith("MEMPROBE "):
+                f.write(line[9:] + "\n")
+                try:
+                    probe.append(json.loads(line[9:]))
+                except ValueError:
+                    pass
+    deep = [r for r in probe if "deep" in r]
+    return {"samples": len(probe), "summary": memtest.summarize(probe, [], skip_sec),
+            "app_last": probe[-1].get("app") if probe else None, "types_last": deep[-1]["deep"] if deep else None,
+            "tracebacks_in_log": (logs.stdout + logs.stderr).count("Traceback")}
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--hours", type=float, default=4)
@@ -57,11 +79,15 @@ def main(argv=None):
     ap.add_argument("--cut-sec", type=float, default=60)
     ap.add_argument("--freeze-sec", type=float, default=45)
     ap.add_argument("--stride", type=int, default=2)
+    ap.add_argument("--memprobe", action="store_true",
+                    help="dashboard'u bellek probuyla başlat (memboot.py: RSS / glibc / Python heap / nesne sayıları)")
     a = ap.parse_args(argv)
     out = c.outdir(f"soak{a.hours:g}h")
     sd = out / f"cams4_stride{a.stride}"
     sd.mkdir(parents=True, exist_ok=True)
     outbox = sd / "outbox"
+    if a.memprobe:                                     # izole yığında dashboard aynı uvicorn ayarlarıyla, prob thread'iyle
+        memtest.bring_up(memtest.override(sd, {}, 0, a.interval), build=False)
     c.reset_data()
     sim = CameraSim(c.VIDEOS[NET[1]], NET[2]).start()
     sources = [f"[{cid}]{v}={c.VIDEOS[v]}" for cid, v in CAMS] + [f"[{NET[0]}]Ağ kamerası={sim.url}"]
@@ -126,6 +152,8 @@ def main(argv=None):
                        "dead_after_stop": sum(v["dead"] for v in ob.values())}
     res["runs_by_camera"] = runs
     res["log"] = stress.log_summary(sd / "detector.log")
+    if a.memprobe:
+        res["memprobe"] = collect_memprobe(sd, skip_sec=600)
     c.write_json(sd / "result.json", res)
     print(json.dumps({k: res.get(k) for k in ("started_utc", "measure_start_utc", "measure_end_utc", "measured_sec",
                                               "delivery", "memory_guard", "detector_exit")}, ensure_ascii=False))
