@@ -7,7 +7,7 @@ PostgreSQL 17, şema yalnızca Alembic ile yönetilir (`create_all()` yok). Head
 | Tablo | Anahtar | Not |
 |---|---|---|
 | `cameras` | `id` (`^[A-Za-z0-9_-]{1,40}$`) | `name` = güncel ad, `source_kind`, `last_seen_at` |
-| `detector_runs` | `id` (UUID) | `camera_id` FK, `status` (running/finished/error/interrupted), `started_at`, `finished_at`, `last_seen_at`, `fps`, `width`, `height`, `report_metadata` (JSONB, ≤256 KiB), **0003:** `source_label`, `source_kind`, `source_ref` |
+| `detector_runs` | `id` (UUID) | `camera_id` FK, `status` (running/finished/error/interrupted; **0005:** abandoned; **0006:** disconnected), `started_at`, `finished_at`, `last_seen_at`, `fps`, `width`, `height`, `report_metadata` (JSONB, ≤256 KiB), **0003:** `source_label`, `source_kind`, `source_ref` |
 | `incidents` | `id` (UUID) | tek bir `(run_id, camera_id, pid)` üçlüsüne bağlı |
 | `violation_events` | `id` (identity), `event_id` UNIQUE | `incident_id` bileşik FK, `event_type`, ekipman bayrakları, oranlar, `video_time_sec` (video saniyesi) ≠ `occurred_at` (UTC), `ingested_at`, `box`, `snapshot_path` |
 | `person_run_reports` | `(run_id, pid)` | run sonu kişi özeti (upsert) |
@@ -24,6 +24,7 @@ snapshot yalnızca start'ta ve `^snapshots/[A-Za-z0-9_.-]+\.jpg$`.
 | 0003 | `detector_runs.source_label/source_kind/source_ref` + 2 CHECK; **geri doldurma yok** | sütunlar doluysa onaysız durur (`-x allow_data_loss=1`) |
 | 0004 | `app_users`, `user_sessions`, `audit_log` (FAZ 6) | kullanıcı/denetim kaydı varsa durur |
 | 0005 | `detector_runs.status` += `abandoned`; `reconciled_at`, `reconcile_reason` (FAZ 7) | uzlaştırılmış run varsa durur |
+| 0006 | `detector_runs.status` += `disconnected` (canlı kaynak koptu; ayrıntı `report_metadata.end_reason`) (FAZ 10-A) | `disconnected` run varsa durur |
 
 ### Çökmüş run uzlaştırması (FAZ 7)
 

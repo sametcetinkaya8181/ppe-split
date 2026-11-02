@@ -362,6 +362,8 @@ def _persist_report(rep: schemas.ReportIn):
             "unclosed_overflow": rep.unclosed_overflow, "orphan_events": rep.orphan_events,
             "error": redact_text(rep.error)[:300] if rep.error else None,
             "video_time_sec": rep.video_time_sec}
+    if rep.end_reason is not None:                # yalnız varsa: eski raporların birebir tekrarı aynı kalır
+        meta["end_reason"] = rep.end_reason
     rows = [{"run_id": rep.run_id, "pid": r.pid, "first_sec": schemas.tenth(r.first, "first"),
              "last_sec": schemas.tenth(r.last, "last"), "observations": r.n, "helmet_rate": r.helmet,
              "vest_rate": r.vest, "ever_violation": r.violation} for r in rep.report]
@@ -637,7 +639,7 @@ def health_ready(request: Request):
 # ---------------- geçmiş (PostgreSQL, salt okuma) ----------------
 # Durum/sayım tanımları: db/history.py. Bu uçlar canlı RAM durumunu (CAMS/ALERTS) kullanmaz ve değiştirmez.
 ACTIVE_WINDOW_SEC = float(os.getenv("ACTIVE_WINDOW_SEC", max(3 * HEARTBEAT_SEC, 60)))
-RUN_STATUSES = ("running", "finished", "error", "interrupted", "abandoned")
+RUN_STATUSES = ("running", "finished", "error", "interrupted", "abandoned", "disconnected")
 _SNAP_URL = re.compile(r"^snapshots/alert_[0-9a-f-]{36}\.jpg$")
 CameraQ = Query(None, pattern=schemas.CAMERA_ID, max_length=40)
 TzQ = Query("UTC", max_length=64, pattern=r"^[A-Za-z0-9_+\-/]+$")
@@ -711,7 +713,8 @@ def _report_summary(md: Optional[dict]) -> Optional[dict]:
     err = md.get("error")
     return {"unclosed_by_reason": by_reason, "unclosed_overflow": md.get("unclosed_overflow", 0),
             "orphan_events": md.get("orphan_events", 0), "video_time_sec": md.get("video_time_sec"),
-            "error": redact_text(err)[:300] if err else None}
+            "error": redact_text(err)[:300] if err else None,
+            "end_reason": md.get("end_reason") if md.get("end_reason") in schemas.END_REASONS else None}
 
 
 def _source_out(r: dict) -> dict:

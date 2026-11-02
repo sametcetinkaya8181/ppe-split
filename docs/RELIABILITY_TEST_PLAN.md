@@ -101,3 +101,14 @@ Tüm ham çıktılar `tools/reliability/output/<UTC>_<ad>/` (Git dışı): `resu
 görüntü). İzole yığın volume'ları test sonrası **silinmez**; temizlemek kullanıcı kararıdır:
 `docker compose -p ppe-rel -f tools/reliability/docker-compose.reliability.yml down` (verisi kalır) ve gerekirse
 `docker volume rm ppe-rel_rel_pgdata ppe-rel_rel_data` (yalnız test verisi).
+
+## 8. FAZ 10-A ekleri
+
+| Araç | Amaç | Komut |
+|---|---|---|
+| `tools/reliability/lifecycle_sim.py` | Kaynak yaşam döngüsü **simülasyonu** (gerçek dedektör + TCP/MPEG-TS kamera benzeticisi): R1 geçici kopma, R2 kalıcı kayıp (geri çekilme + operatör görünürlüğü), R3 donma (varsayılan okuma zaman aşımı), R4 başlangıçta erişilemeyen → sonradan erişilebilir uç. Ölçülen: DB run durumu/bitiş nedeni, aynı kamera kimliği, yeniden bağlanma süresi, geri çekilme aralıkları, operatör ekranı, outbox ↔ DB | `python tools/reliability/lifecycle_sim.py` |
+| `tools/reliability/soak.py` | Uzun soak: 3 yerel dosya + 1 ağ kamerası benzeticisi (4 kamera), ağ kamerasına periyodik kopma (60 sn) ve donma (45 sn); zaman serisi + teslim bütünlüğü (gönderici sayaçları ↔ DB) + run durumları | `python tools/reliability/soak.py --hours 4` / `--hours 24` |
+
+Gerçek RTSP kamera (kimlik doğrulama hatası, RTSP `timeout`/`rw_timeout` davranışı, UDP/TCP taşıma) bu araçlarla
+**test edilmez**; sahada gerçek kamerayla ayrıca yapılmalıdır (BLOCKED: erişim yok). 24 saatlik soak için araç hazır;
+sonuç ancak gerçekten 24 saat koşulduğunda yazılır.

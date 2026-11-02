@@ -9,7 +9,7 @@ from sqlalchemy import create_engine, inspect, text
 from db import Base
 from tests.conftest import alembic_cfg
 
-HEAD = "0005"                                   # güncel Alembic head
+HEAD = "0006"                                   # güncel Alembic head
 
 TABLES = {"cameras", "detector_runs", "violation_events", "person_run_reports", "incidents", "app_users",
           "user_sessions", "audit_log"}

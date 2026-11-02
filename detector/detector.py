@@ -27,6 +27,11 @@ os.environ.setdefault("OPENCV_FFMPEG_LOGLEVEL", "-8")
 # FAZ 9 gizlilik: Ultralytics anonim kullanım analitiği (Google Analytics) ve çevrimiçi otomatik paket kurulumu
 # kapalı. Ultralytics bu değişkeni içe aktarılırken okur; açmak için detector/.env içine YOLO_OFFLINE=0 yazın.
 os.environ.setdefault("YOLO_OFFLINE", "1")
+# FAZ 10-A: ağ akışında okuma zaman aşımı (donmuş/kopmuş kamera ~30 sn yerine bu sürede algılanır ve yeniden
+# bağlanılır). Kullanıcı OPENCV_FFMPEG_CAPTURE_OPTIONS verdiyse ona dokunulmaz; 0 = kapalı (OpenCV varsayılanı).
+STREAM_READ_TIMEOUT_SEC = float(os.getenv("STREAM_READ_TIMEOUT_SEC", 10))
+if STREAM_READ_TIMEOUT_SEC > 0:
+    os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", f"rw_timeout;{int(STREAM_READ_TIMEOUT_SEC * 1e6)}")
 
 import base64
 import logging
@@ -78,6 +83,12 @@ OUTBOX_MAX_BYTES = int(os.getenv("OUTBOX_MAX_BYTES", 512 * 1024 * 1024))
 OUTBOX_MAX_ITEMS = int(os.getenv("OUTBOX_MAX_ITEMS", 100_000))
 OUTBOX_HIGH_WATERMARK = float(os.getenv("OUTBOX_HIGH_WATERMARK", 0.8))
 OUTBOX_RETRY_BACKOFF_MAX = float(os.getenv("OUTBOX_RETRY_BACKOFF_MAX", 30))
+# FAZ 10-A yeniden bağlanma: üstel geri çekilme (+-%20 sapma); sağlıklı run (>= RECONNECT_HEALTHY_SEC ve kare var)
+# sonrası sayaç sıfırlanır. Bekleme sırasında dashboard'a OFFLINE_FRAME_SEC'de bir "bağlantı yok" karesi gider.
+RECONNECT_BASE_SEC = float(os.getenv("RECONNECT_BASE_SEC", 2))
+RECONNECT_MAX_SEC = float(os.getenv("RECONNECT_MAX_SEC", 60))
+RECONNECT_HEALTHY_SEC = float(os.getenv("RECONNECT_HEALTHY_SEC", 30))
+OFFLINE_FRAME_SEC = float(os.getenv("OFFLINE_FRAME_SEC", 5))
 
 GREEN, RED, GRAY = (0, 200, 0), (0, 0, 255), (160, 160, 160)
 
@@ -187,8 +198,16 @@ def resolve_source(source):
 # ---------------------------------------------------------------- tek kaynağın işlenmesi
 def run_once(model, cid, name, source, sender, loop_no, stop=None):
     """Tek run: kaynağı açar ve sonuna kadar işler. Her çağrı YENİ bir run_id üretir (tekrar oynatma ve yeniden
-    bağlanma = yeni run). Kaynak açıldıktan sonra run nasıl biterse bitsin (finished / error / interrupted) rapor
-    finally içinde Sender kuyruğuna girer; kaynak hiç açılamazsa run başlamamış sayılır ve rapor gönderilmez."""
+    bağlanma = yeni run). Kaynak açıldıktan sonra run nasıl biterse bitsin rapor finally içinde Sender kuyruğuna
+    girer; kaynak hiç açılamazsa run başlamamış sayılır ve rapor gönderilmez.
+
+    Bitiş sınıflandırması (FAZ 10-A; rapordaki run_status + end_reason):
+      finished     / eof                      : dosya (veya sonu bilinen ağ videosu) normal bitti
+      interrupted  / user_stop                : kullanıcı/servis durdurdu (Ctrl+C, stop olayı)
+      disconnected / source_lost              : canlı akış beklenmedik biçimde bitti (kopma, okuma zaman aşımı)
+      disconnected / source_lost_after_stall  : akış önce dondu / sinyal kaybetti, sonra bitti
+      error        / exception                : dedektör veya kaynak hatası (istisna)
+    Döner: {"status", "end_reason", "frames"} (stream_worker geri çekilme kararı için)."""
     run_id = protocol.new_id()
     shown, kind = protocol.redact_source(source), protocol.source_kind(source)
     if _is_youtube(source):
@@ -202,6 +221,7 @@ def run_once(model, cid, name, source, sender, loop_no, stop=None):
     if not fps or fps != fps or fps > 120:           # bazı RTSP kaynakları saçma fps döndürür
         fps = 25.0
     W, H = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    n_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0    # canlı akışta 0/-1; ağ üzerinden dosyada > 0
     cap.release()
     tel = telemetry.for_camera(cid, device=DEVICE)
     if W == 0:
@@ -218,7 +238,7 @@ def run_once(model, cid, name, source, sender, loop_no, stop=None):
     monitor = core.PPEMonitor()
     tracker = protocol.IncidentTracker()         # incident durumu run'a özel
     extra = {"stream_buffer": True} if (BUFFER and not is_file) else {}   # canlı akış/kamera: kare kaybını önle
-    run_status, error, progress = "error", None, {"t": 0.0}
+    run_status, end_reason, error, progress = "error", "exception", None, {"t": 0.0, "frames": 0}
     tel.run_started(run_id, loop=loop_no, source_kind=kind, fps=fps, width=W, height=H, vid_stride=VID_STRIDE)
     try:
         results = model.track(source=src, stream=True, persist=True, tracker=TRACKER,
@@ -226,9 +246,10 @@ def run_once(model, cid, name, source, sender, loop_no, stop=None):
                               verbose=False, **extra)
         _process(model, cid, results, fps, W, H, is_file, meta, monitor, tracker, sender, run_id, stop, progress,
                  tel)
-        run_status = "interrupted" if (stop is not None and stop.is_set()) else "finished"
+        run_status, end_reason = classify_end(stop is not None and stop.is_set(), is_file, n_frames,
+                                              progress["frames"] * VID_STRIDE, tel.run_disturbed())
     except KeyboardInterrupt:
-        run_status = "interrupted"
+        run_status, end_reason = "interrupted", "user_stop"
         raise
     except Exception as exc:
         error = protocol.redact_text(exc)[:300]
@@ -245,9 +266,43 @@ def run_once(model, cid, name, source, sender, loop_no, stop=None):
         sender.submit_report({"cam": cid, "name": name, "report": report, "status": legacy,
                               "run_id": run_id, "camera_id": cid, "run_status": run_status, "loop": loop_no,
                               "source_kind": kind, "started_at": started_at, "finished_at": protocol.utc_now_iso(),
-                              "video_time_sec": round(t, 1), "error": error,
+                              "video_time_sec": round(t, 1), "error": error, "end_reason": end_reason,
                               "unclosed_incidents": tracker.unclosed,
                               "unclosed_overflow": tracker.unclosed_overflow, "orphan_events": tracker.orphans})
+    return {"status": run_status, "end_reason": end_reason, "frames": progress["frames"]}
+
+
+def classify_end(stopped: bool, is_file: bool, n_frames: float, frames_read: int, disturbed: bool) -> tuple:
+    """Hatasız biten run'ın sonucu. Canlı akışın 'bitmesi' normal değildir: Ultralytics kopmada hata fırlatmadan
+    akışı sonlandırır; bu yüzden dosya olmayan ve sonu bilinmeyen kaynakta bitiş = bağlantı kaybı."""
+    if stopped:
+        return "interrupted", "user_stop"
+    if is_file or (n_frames > 0 and frames_read >= n_frames * 0.98):
+        return "finished", "eof"
+    return "disconnected", "source_lost_after_stall" if disturbed else "source_lost"
+
+
+def reconnect_delay(failures: int, rng=None) -> float:
+    """Üstel geri çekilme: RECONNECT_BASE_SEC * 2^(n-1), en fazla RECONNECT_MAX_SEC, +-%20 sapma."""
+    import random
+    base = min(RECONNECT_MAX_SEC, RECONNECT_BASE_SEC * 2 ** max(0, failures - 1))
+    return round(base * (rng or random).uniform(0.8, 1.2), 2)
+
+
+def offline_frame(name: str, reason: str):
+    """Bağlantı yokken dashboard karosu için açıkça etiketli yer tutucu (gerçek görüntü değil)."""
+    import numpy as np
+    img = np.full((360, 640, 3), 40, np.uint8)
+    cv2.putText(img, "KAMERA BAGLANTISI YOK", (60, 170), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0, 0, 255), 3)
+    cv2.putText(img, f"{reason} - yeniden baglaniliyor", (60, 215), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (220, 220, 220), 1)
+    ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 70])
+    return buf.tobytes() if ok else None
+
+
+def _send_offline(cid, name, source, sender, tel, reason):
+    meta = {"source": protocol.redact_source(source), "source_kind": protocol.source_kind(source),
+            "status": "reconnecting", "error": reason, "proc_fps": 0.0, "health": tel.compact()}
+    sender.submit(offline_frame(name, reason), {"meta": meta, "summary": None, "people": [], "camera_id": cid})
 
 
 def _process(model, cid, results, fps, W, H, is_file, meta, monitor, tracker, sender, run_id, stop, progress,
@@ -265,6 +320,7 @@ def _process(model, cid, results, fps, W, H, is_file, meta, monitor, tracker, se
             return
         t = idx * VID_STRIDE / fps
         progress["t"] = t
+        progress["frames"] = idx
         frame = r.orig_img.copy()
         persons, helmets, vests = [], [], []
         b = r.boxes
@@ -369,19 +425,37 @@ def stream_worker(cid, name, source, delay, stop):
         except Exception as exc:                 # noqa: BLE001
             print(f"[{cid}] Model yüklenemedi: {exc}", flush=True)
             return
-        loop_no = 0
+        loop_no, failures = 0, 0
         while not stop.is_set():
             loop_no += 1
+            t_run = time.monotonic()
             try:
-                run_once(model, cid, name, source, sender, loop_no, stop)
+                out = run_once(model, cid, name, source, sender, loop_no, stop) or {}
+                reason = out.get("end_reason", "eof")
             except Exception as exc:             # noqa: BLE001
                 print(f"[{cid}] HATA: {protocol.redact_text(exc)}", flush=True)
-                tel.reconnecting()
-                if stop.wait(3):                 # RTSP kopması vb. için yeniden dene
-                    break
-                continue
-            if not LOOP:
+                out, reason = {"status": "error", "frames": 0}, "source_unavailable"
+            if stop.is_set():
                 break
+            if out.get("status") == "finished":
+                if not LOOP:                     # LOOP yalnız dosya tekrarını yönetir; canlı kaynak hep yeniden bağlanır
+                    break
+                if out.get("frames", 0) > 0:
+                    failures = 0
+                    continue                     # dosya döngüsü: hemen yeniden oynat
+                reason = "no_frames"             # kare vermeyen kaynak: hızlı döngüye girme
+            healthy = out.get("frames", 0) > 0 and time.monotonic() - t_run >= RECONNECT_HEALTHY_SEC
+            failures = 1 if healthy else failures + 1
+            wait = reconnect_delay(failures)
+            tel.reconnecting()
+            print(f"[{cid}] kaynak kullanılamıyor ({reason}); {wait:.1f} sn sonra yeniden bağlanılacak "
+                  f"(deneme {failures})", flush=True)
+            end = time.monotonic() + wait
+            while not stop.is_set():
+                _send_offline(cid, name, source, sender, tel, reason)   # operatör "izlenemiyor" görsün
+                left = end - time.monotonic()
+                if left <= 0 or stop.wait(min(OFFLINE_FRAME_SEC, left)):
+                    break
     except KeyboardInterrupt:
         pass
     finally:                                     # bekleyen olay/raporları sınırlı süre boşalt

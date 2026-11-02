@@ -18,7 +18,8 @@ TZ = DateTime(timezone=True)
 
 CAMERA_ID_RE = "^[A-Za-z0-9_-]{1,40}$"            # dashboard get_cam() temizliğiyle aynı
 SNAPSHOT_PATH_RE = r"^snapshots/[A-Za-z0-9_.-]+\.jpg$"
-RUN_STATUSES = ("running", "finished", "error", "interrupted", "abandoned")   # 0005: abandoned
+RUN_STATUSES = ("running", "finished", "error", "interrupted", "abandoned",   # 0005: abandoned
+                "disconnected")                                                # 0006: canlı kaynak koptu
 SOURCE_KINDS = ("file", "webcam", "rtsp", "youtube", "other")
 EVENT_TYPES = ("start", "ongoing", "end")
 

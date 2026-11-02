@@ -153,7 +153,8 @@ class OpsMiddleware:
 
 # ---------------------------------------------------------------- dedektör sağlık özeti (beyaz liste)
 STATES = {"starting", "connected", "disconnected", "reconnecting", "ended", "stopped"}
-FLAGS = {"camera_disconnected", "no_signal", "frozen", "stalled", "lagging", "unevaluated_persons"}
+FLAGS = {"camera_disconnected", "no_signal", "frozen", "stalled", "lagging", "unevaluated_persons",
+         "unevaluated_long"}
 REASONS = {"warmup", "low_conf", "too_small", "edge"}
 OUTBOX_STATES = {"ok", "backoff", "paused_auth", "paused_incompatible"}
 OUTBOX_WARNINGS = {"high_watermark", "pending_age", "dead_letters", "quarantine", "disk_write_errors",
@@ -161,7 +162,8 @@ OUTBOX_WARNINGS = {"high_watermark", "pending_age", "dead_letters", "quarantine"
 _NUM_HEALTH = ("uptime_sec", "proc_fps", "source_fps", "vid_stride", "lag_sec", "last_frame_age_sec", "frame_ms_p95",
                "inference_ms_p95", "reconnects")
 _NUM_COVERAGE = ("visible", "decided", "analyzing", "stale_decision", "track_frames", "track_frames_unevaluated",
-                 "tracks_closed_never_evaluated", "tracks_seen")
+                 "track_frames_analyzing", "tracks_closed_never_evaluated", "never_evaluated_max_sec",
+                 "open_unevaluated_long", "open_unevaluated_max_sec", "tracks_seen")
 _NUM_OUTBOX = ("pending_count", "pending_bytes", "oldest_pending_age_sec", "dead_letter_count", "quarantine_count",
                "replay_success_count", "capacity_used_ratio")
 
@@ -186,6 +188,8 @@ def sanitize_health(h) -> dict | None:
     out["coverage"] = {k: _num(cov.get(k)) for k in _NUM_COVERAGE}
     by = cov.get("analyzing_by_reason") if isinstance(cov.get("analyzing_by_reason"), dict) else {}
     out["coverage"]["analyzing_by_reason"] = {k: _num(v) for k, v in by.items() if k in REASONS}
+    cum = cov.get("unevaluated_by_reason") if isinstance(cov.get("unevaluated_by_reason"), dict) else {}
+    out["coverage"]["unevaluated_by_reason"] = {k: _num(v) for k, v in cum.items() if k in REASONS}
     return out
 
 

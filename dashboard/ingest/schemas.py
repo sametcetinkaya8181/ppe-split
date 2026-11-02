@@ -20,6 +20,10 @@ CAMERA_ID = r"^[A-Za-z0-9_-]{1,40}$"
 HELMET_TEXT, VEST_TEXT = "Baretsiz", "Yeleksiz"
 SOURCE_KINDS = ("file", "webcam", "rtsp", "youtube", "other")
 UNCLOSED_REASONS = ("stale", "run_end", "superseded")
+# FAZ 10-A: run bitiş nedeni (dedektör sınıflandırması; detector.classify_end)
+END_REASONS = ("eof", "user_stop", "source_lost", "source_lost_after_stall", "exception")
+RUN_END_STATUS = {"eof": "finished", "user_stop": "interrupted", "source_lost": "disconnected",
+                  "source_lost_after_stall": "disconnected", "exception": "error"}
 MAX_SECONDS = Decimal("999999999.9")
 
 Rate = Annotated[StrictInt, Field(ge=0, le=100)]
@@ -169,7 +173,8 @@ class ReportIn(BaseModel):
     report: list[ReportRow]
     run_id: uuid.UUID
     camera_id: CameraId
-    run_status: Literal["finished", "error", "interrupted"]
+    run_status: Literal["finished", "error", "interrupted", "disconnected"]
+    end_reason: Literal[END_REASONS] | None = None              # eski dedektörler göndermez
     loop: Annotated[StrictInt, Field(ge=1)] | None = None
     source_kind: Literal[SOURCE_KINDS] | None = None
     started_at: AwareDatetime
@@ -190,6 +195,8 @@ class ReportIn(BaseModel):
             tenth(self.video_time_sec, "video_time_sec")
         if len({r.pid for r in self.report}) != len(self.report):
             raise ValueError("report içinde aynı pid birden fazla kez var")
+        if self.end_reason is not None and RUN_END_STATUS[self.end_reason] != self.run_status:
+            raise ValueError(f"end_reason '{self.end_reason}' ile run_status '{self.run_status}' çelişiyor")
         return self
 
 

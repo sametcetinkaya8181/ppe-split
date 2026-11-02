@@ -169,3 +169,52 @@ küçük artışların doygunluğu 4/24 saatlik soak ile doğrulanmalı.
 | Outbox kapasite kullanımı | < %50 normal işletmede | %0 (normal), %100+ yedek (kapasite testi) | `high_watermark` %80 (uygulandı) |
 | Disk boş alanı (outbox) | > 1 GB | ölçüldü | `disk_free_low` < 1 GB (uygulandı) |
 | Toplam alarm gecikmesi (ihlal başlangıcı → operatör ekranı) | İSG belirlemeli | karar gecikmesi ~3.2 sn (FAZ 8 sentetik) + teslim | — |
+
+## 8. FAZ 10-A: 4 kamera, 4 saatlik soak (2026-11-01T21:45:01Z – 2026-11-02T01:45:05Z)
+
+**4 saat — GERÇEKTEN KOŞULDU.** Başlangıç **2026-11-01T21:45:01Z**, bitiş **2026-11-02T01:45:05Z**, ölçüm
+**14 404.1 sn** (30.8 sn ısınma hariç), 479 örnek (30 sn). Ortam: izole `ppe-rel` (PostgreSQL 17 + FAZ 10-A dashboard
+imajı), gerçek `detector.py` (FAZ 10-A kodu), RTX 3050 Laptop, paylaşımlı dizüstü (başlangıçta boş RAM 3.4 GB, sayfa
+dosyası 4.0 GB). **4 kamera**, 1080p, stride 2: `relc1` V1 dosya, `relc2` V2 dosya, `relc3` V1 dosya (tekrar video),
+`relnet` V2 üzerinden TCP/MPEG-TS **ağ kamerası benzeticisi**; `relnet`'e her 40 dk'da 60 sn kopma ve aralarda 45 sn
+donma: toplam **11 arıza** (6 kopma + 5 donma). Bellek koruması tetiklenmedi; zarif kapanış 3.3 sn.
+
+| Gösterge | ~0. sa (medyan) | 1. sa | 2. sa | 3. sa | Son 15 dk | Yorum |
+|---|---|---|---|---|---|---|
+| Dedektör tanıtıcı (handle) | 2556 | 2626 | 2626 | 2626.5 | 2627 | 1. saatten sonra sabit |
+| Dedektör thread | 109 | 109 | 109 | 109 | 109 | Sabit |
+| Dedektör RSS toplam MB | 1736 | 1826 | 1847 | 1692 | 1718 | Artış yok (Windows çalışma kümesi kırpması; özel bellek ölçülmedi) |
+| torch rezerve (kamera 1) MB | 182 | 182 | 182 | 184 | 184 | ≈ sabit |
+| GPU bellek (cihaz) MB | 973 | 1003 | 1019 | 1029 | 1029 | +56 MB, son saatte plato |
+| **Dashboard container MB** | 80.0 | 84.2 | 88.9 | 92.0 | 94.6 | **Doğrusal artış ~3.7 MB/sa; plato yok** (bkz. risk) |
+| PostgreSQL bağlantı | 5 | 5 | 5 | 5 | 5 | Sabit; havuz `checked_out` max 1 |
+| PostgreSQL DB MB | 8.6 | 10.3 | 11.8 | 13.4 | 14.5 | Veri büyümesi (4656 olay + ~2500 run; kısa video döngüsü saatte ~620 run üretir) |
+| Outbox WAL (kamera 2) MB | 4.0 | 4.0 | 4.0 | 4.0 | 4.0 | Plato; kapanışta 0 |
+| Lag (kamera 2) sn | -0.1 | -0.1 | -0.1 | -0.1 | -0.1 | Eğim 0.000 sn/sa |
+| `/api/state` ms | 19.5 | 21.0 | 20.6 | 13.8 | 12.3 | Sabit/azalan |
+| DB olay yazımı p95 ms | 49.6 | 43.8 | 39.6 | 38.0 | 36.3 | Sabit/azalan |
+| WebSocket aktif | 1 | 1 | 1 | 1 | 1 | Sızıntı yok |
+
+| Kamera | İşlenen kare | FPS p50 (p05) | Lag p95 / max sn | Kare ms p95 (medyan) / p99 max | Çıkarım p50/p95 (p99 max) | ByteTrack p95 | Outbox max bekleyen | Yeniden bağlanma | Run'lar |
+|---|---|---|---|---|---|---|---|---|---|
+| relc1 (V1 dosya) | 177 033 | 12.42 (10.51) | -0.08 / -0.01 | 66.3 / 136.6 | 21.3/40.6 (82.4) | 2.6 | 0 | 0 | 959 `finished/eof` + 1 `interrupted` |
+| relc2 (V2 dosya) | 170 585 | 12.00 (11.64) | -0.08 / -0.02 | 67.2 / 134.5 | 21.8/41.5 (87.4) | 2.7 | 0 | 0 | 596 `finished/eof` + 1 `interrupted` |
+| relc3 (V1 tekrar) | 177 072 | 12.42 (10.67) | -0.08 / 0.01 | 66.8 / 148.6 | 21.5/41.4 (92.9) | 2.6 | 0 | 0 | 959 `finished/eof` + 1 `interrupted` |
+| relnet (ağ benzetimi) | 162 665 | 12.00 (2.40) | -0.19 / 19.5* | 125.0** / 159.2 | 20.1/40.0 (87.7) | 3.4 | 0 | 40 deneme | **11 `disconnected/source_lost_after_stall`** + 1 `interrupted` |
+
+\* Ağ kaynağında lag, donma/kopma süresini içerir (canlı kaynakta kaçırılan süre geri gelmez); işleme birikmesi değildir.
+\*\* Canlı kaynakta kare döngüsü, kaynağın bir sonraki kareyi üretmesini beklemeyi de içerir.
+
+Sistem: GPU % p50/p95 42/63, sıcaklık max 74 °C; sistem CPU % p50/p95 47/52; dedektör CPU p50 %347 (~3.5 çekirdek);
+sistem RAM ~14.3 GB / 15.3 GB (sayfalama); dashboard CPU % p95 54. **Teslim:** dedektör sayaçlarına göre 4656 olay
+gönderildi, PostgreSQL'de **4656 tekil**, kayıp **0**, çift **0**; durdurmadan sonra bekleyen 0, ölü/karantina 0;
+raporlar: 2529. Dashboard izlenen hata kodları (401/403/409/413/422/429/500/503) 0. WebSocket probu (ping/pong
+düzeltilmiş): 1 bağlantı, **0 kopma**, 689 448 kare, en büyük boşluk 0.69 sn.
+
+**Sonuç (4 saat):** tanıtıcı, thread, DB bağlantısı, WAL, gecikme ve teslim stabil; 11 kaynak arızasının her biri
+doğru durumla kaydedildi ve olay kaybı olmadı. **Risk:** dashboard container belleği 4 saat boyunca doğrusal arttı
+(+14.6 MB); bu hızla 1 GB `mem_limit`'e ~10 günde ulaşılır (OOM → `restart: unless-stopped` → outbox replay; veri
+kaybı beklenmez ama canlı ekran kesilir). Sızıntı olduğu kanıtlanmadı; 24 saatlik soak + bellek profili gerekir.
+
+**24 saat — KOŞULMADI (INCOMPLETE).** Araç hazır: `python tools/reliability/soak.py --hours 24`. "24 saatlik
+stabilite doğrulandı" iddia edilmez.

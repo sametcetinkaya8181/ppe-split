@@ -185,16 +185,23 @@ def test_cameras_are_isolated():
 
 
 # ---------------------------------------------------------------- rapor ve durum (6. görev, 17)
-def test_finished_report_keeps_legacy_fields(monkeypatch):
-    s, _ = run()
+def test_finished_report_keeps_legacy_fields(monkeypatch, tmp_path):
+    """Normal bitiş = DOSYA kaynağının sonu (FAZ 10-A: canlı akışın bitişi 'disconnected', test_lifecycle.py)."""
+    vid = tmp_path / "giris.mp4"
+    vid.write_bytes(b"x")                                       # FakeCap içeriği okumaz; yalnız 'dosya' olsun
+    monkeypatch.setattr(d.time, "sleep", lambda sec: None)      # dosya gerçek zaman hızında oynatılmasın
+    s = RecSender()
+    d.run_once(FakeModel(SCENARIO), "cam1", "Giriş", str(vid), s, 1)
     rep = s.reports[0]
     assert rep["run_status"] == "finished" and rep["status"] == "running"     # LOOP=1: eski davranış
+    assert rep["end_reason"] == "eof"
     assert rep["cam"] == "cam1" and rep["name"] == "Giriş" and rep["error"] is None
     (row,) = rep["report"]
     assert set(row) == {"pid", "first", "last", "n", "helmet", "vest", "violation"} and row["violation"] is True
-    assert rep["started_at"] <= rep["finished_at"] and rep["source_kind"] == "rtsp"
+    assert rep["started_at"] <= rep["finished_at"] and rep["source_kind"] == "file"
     monkeypatch.setattr(d, "LOOP", False)
-    s2, _ = run()
+    s2 = RecSender()
+    d.run_once(FakeModel(SCENARIO), "cam1", "Giriş", str(vid), s2, 1)
     assert s2.reports[0]["status"] == "finished" and s2.reports[0]["run_status"] == "finished"
 
 

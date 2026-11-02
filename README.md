@@ -160,7 +160,9 @@ Her seferinde yazmak istemezsen `detector/.env` oluştur (örnek: `.env.example`
 | `IMGSZ` | `960` | Düşürürsen hızlanır (`640`), doğruluk azalabilir |
 | `VID_STRIDE` | `1` | Her N. kareyi işle (`2` ≈ 2 kat hızlı) |
 | `STREAM_WIDTH` | `960` | Dashboard'a giden kare genişliği |
-| `LOOP` | `1` | Video bitince başa sar |
+| `LOOP` | `1` | Video DOSYASI bitince başa sar (canlı kaynak koparsa LOOP'tan bağımsız yeniden bağlanılır) |
+| `STREAM_READ_TIMEOUT_SEC` | `10` | Ağ akışında okuma zaman aşımı; donmuş/kopmuş kamera bu sürede algılanır (FAZ 10-A) |
+| `RECONNECT_BASE_SEC` / `RECONNECT_MAX_SEC` | `2` / `60` | Yeniden bağlanma üstel geri çekilmesi; bağlantı yokken ekranda "KAMERA BAGLANTISI YOK" |
 | `INGEST_TOKEN` | boş | Doluysa dashboard (compose) ile aynı olmalı |
 | `SEND_TIMEOUT` | `5` | Dashboard HTTP isteği zaman aşımı (sn) |
 | `OUTBOX_ENABLED` | `1` | Olay/raporları önce diskteki kalıcı kuyruğa (SQLite WAL) yaz; `0` = eski bellek içi kuyruk |

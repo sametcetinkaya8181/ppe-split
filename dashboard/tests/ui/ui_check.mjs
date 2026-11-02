@@ -166,13 +166,20 @@ await check("Canlı İzleme (FAZ 9): izlenemeyen kamera ve değerlendirilemeyen 
   const down = await ev(`const t = ${tile}; return { h: t.querySelector(".health").textContent, cls: t.querySelector(".health").className,
     off: t.classList.contains("off"), conn: document.getElementById("connText").textContent };`);
   assert(down.cls.includes("down") && down.off && down.conn.includes("İZLENEMİYOR"), JSON.stringify(down));
-  await post({ health: { state: "connected", flags: ["unevaluated_persons"], coverage: { visible: 2, decided: 0, analyzing: 2,
-    analyzing_by_reason: { too_small: 1, edge: 1 } } } });
+  await post({ health: { state: "connected", flags: ["unevaluated_persons", "unevaluated_long"], coverage: { visible: 2,
+    decided: 0, analyzing: 2, analyzing_by_reason: { too_small: 1, edge: 1 }, track_frames: 200, track_frames_unevaluated: 182,
+    unevaluated_by_reason: { edge: 180, low_conf: 2 }, open_unevaluated_long: 1, open_unevaluated_max_sec: 14.5,
+    tracks_closed_never_evaluated: 3, tracks_seen: 7, never_evaluated_max_sec: 23.9 } } });
   await waitFor(`(${tile})?.querySelector(".health").textContent.includes("değerlendirilemiyor")`);
   const cov = await ev(`const t = ${tile}; return { h: t.querySelector(".health").textContent, off: t.classList.contains("off") };`);
   assert(cov.h.includes("2 kişi değerlendirilemiyor") && cov.h.includes("uzak/küçük 1") && cov.h.includes("kadraj kenarı 1")
     && !cov.off, JSON.stringify(cov));
-  return `${down.h} | ${cov.h}`;
+  await waitFor(`[...document.querySelectorAll("#covWrap tbody tr")].some(r => r.textContent.includes("Canlı test"))`);
+  const panel = await ev(`return [...document.querySelectorAll("#covWrap tbody tr")].find(r => r.textContent.includes("Canlı test")).textContent;`);
+  assert(panel.includes("%9.0") && panel.includes("%91.0") && panel.includes("kadraj kenarı %90.0")
+    && panel.includes("1 kişi (en uzun 14.5 sn)") && panel.includes("3 / 7"), panel);
+  assert((await text(".cov-note")).includes("Uygun\" sayılmaz") || (await text(".cov-note")).includes("sayılmaz"), "not yok");
+  return `${down.h} | ${cov.h} | kapsam: ${panel}`;
 });
 
 await ev(`document.getElementById("tab-history").click(); return true;`);
@@ -280,7 +287,17 @@ await ev(`document.getElementById("tab-runs").click(); return true;`);
 await idle("rStatus");
 await check("Kamera / Run Raporları: kamera ve run tabloları", async () => {
   const c = await rows("rCams"), r = await rows("rTable");
-  assert(c === 4 && r === 3, `${c} kamera, ${r} run`);  // cam9: run kimliksiz canlı test karesi (run oluşturmaz)
+  assert(c === 4 && r === 4, `${c} kamera, ${r} run`);  // cam9: run kimliksiz canlı test karesi (run oluşturmaz)
+});
+await check("Run filtresi (FAZ 10-A): 'Bağlantı koptu' normal bitişten ayrı, nedeniyle gösteriliyor", async () => {
+  await ev(`const f = document.getElementById("rForm"); f.elements.status.value = "disconnected";
+    f.requestSubmit(); return true;`);
+  await waitFor(`document.querySelectorAll("#rTable tbody tr").length === 1`);
+  const t = await ev(`return document.querySelector("#rTable tbody tr").textContent;`);
+  assert(t.includes("Bağlantı koptu") && t.includes("kaynak bağlantısı koptu") && !t.includes("Bitti"), t);
+  await ev(`const f = document.getElementById("rForm"); f.elements.status.value = ""; f.requestSubmit(); return true;`);
+  await waitFor(`document.querySelectorAll("#rTable tbody tr").length === 4`);
+  return t.slice(0, 120);
 });
 await check("Run detayı -> 'Bu run'ın ihlallerini listele' geçmişi run'a göre filtreliyor", async () => {
   await ev(`const tr = [...document.querySelectorAll("#rTable tbody tr")].find(r => r.textContent.includes("Bitti"));

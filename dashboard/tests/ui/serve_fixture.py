@@ -71,6 +71,11 @@ def seed(url, data_dir):
         {"incident_id": str(stale), "pid": 11, "reason": "stale", "t": 20.0},
         {"incident_id": str(run_end), "pid": 12, "reason": "run_end", "t": 30.0}],
         started_at=iso(at(300)), finished_at=iso(at(1)))).status_code == 200
+    # FAZ 10-A: canlı kaynağı kopan run (olaysız; 'disconnected' / source_lost)
+    r4 = uuid.uuid4()
+    assert api.post("/ingest/report", json=report(r4, name="Giriş kapısı", status="disconnected", rows=[],
+                                                  end_reason="source_lost", source_kind="rtsp",
+                                                  started_at=iso(at(45)), finished_at=iso(at(40)))).status_code == 200
     # active (çalışan run) + orphan + XSS adlı kamera
     r2 = uuid.uuid4()
     send([event("start", run_id=r2, incident_id=uuid.uuid4(), cam="cam2", pid=21, at=at(2)),

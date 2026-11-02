@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from .models import Camera, DetectorRun, Incident, PersonRunReport, ViolationEvent
 
-TERMINAL = ("finished", "error", "interrupted")
+TERMINAL = ("finished", "error", "interrupted", "disconnected")      # rapordan sonra değişmez (0006)
 
 
 class Conflict(Exception):

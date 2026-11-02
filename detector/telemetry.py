@@ -25,6 +25,7 @@ HEALTH_EVERY = float(os.getenv("HEALTH_EVERY", 5))   # kaynak örnekleme + healt
 LATENCY_WINDOW = int(os.getenv("HEALTH_WINDOW", 600))   # yüzdelikler için son N kare
 LAG_WARN_SEC = float(os.getenv("LAG_WARN_SEC", 2.0))     # kaynak zaman çizelgesinin bu kadar gerisinde: uyarı
 FREEZE_WARN_SEC = float(os.getenv("FREEZE_WARN_SEC", 10.0))   # bu kadar süre birebir aynı kare: donmuş olabilir
+LONG_UNEVALUATED_SEC = float(os.getenv("LONG_UNEVALUATED_SEC", 10.0))   # bu kadar süredir karar alamayan kişi
 STALL_WARN_SEC = float(os.getenv("STALL_WARN_SEC", 5.0))      # bağlıyken bu kadar süre hiç kare gelmedi: 'stalled'
 NO_SIGNAL_STD = 2.0                                  # küçültülmüş griden std < 2: tek renk kare (sinyal yok)
 
@@ -154,7 +155,7 @@ class CameraTelemetry:
         self.state, self.state_since, self.last_error = "starting", clock(), None
         self.run = {"run_id": None, "loop": 0, "source_kind": None, "source_fps": None, "width": None, "height": None,
                     "vid_stride": None, "started_mono": None, "first_mono": None, "first_t": None,
-                    "startup_sec": None, "frames": 0, "t": 0.0}
+                    "startup_sec": None, "frames": 0, "t": 0.0, "max_gap_sec": 0.0, "no_signal": 0}
         self.counters = {"frames_processed": 0, "runs_started": 0, "runs_finished": 0, "runs_failed": 0,
                          "source_open_failures": 0, "reconnect_attempts": 0, "no_signal_frames": 0,
                          "events_start": 0, "events_end": 0, "events_ongoing": 0}
@@ -204,15 +205,25 @@ class CameraTelemetry:
             self._close_tracks()
             self.run = {"run_id": str(run_id), "loop": loop, "source_kind": source_kind, "source_fps": round(fps, 2),
                         "width": width, "height": height, "vid_stride": vid_stride, "started_mono": self.clock(),
-                        "first_mono": None, "first_t": None, "startup_sec": None, "frames": 0, "t": 0.0}
+                        "first_mono": None, "first_t": None, "startup_sec": None, "frames": 0, "t": 0.0,
+                        "max_gap_sec": 0.0, "no_signal": 0}
             self.counters["runs_started"] += 1
             self._last_sig, self._same_since = None, None
+            self.last_frame_mono = None                    # önceki run'ın son karesi yeni run'da 'stalled' sayılmasın
             self._set_state("connected")
+
+    def run_disturbed(self) -> bool:
+        """Bu run'da akış dondu (kareler arası >= STALL_WARN_SEC) veya sinyal kaybı (>= 3 tek renk kare) görüldü mü.
+        Ultralytics okuma hatasında kendisi TEK bir siyah kare üretir; bu tek kare donma/sinyal kaybı sayılmaz."""
+        with self.lock:
+            return self.run["no_signal"] >= 3 or self.run["max_gap_sec"] >= STALL_WARN_SEC
 
     def run_ended(self, status: str, error=None):
         with self.lock:
             self._close_tracks()
             self.counters["runs_finished" if status in ("finished", "interrupted") else "runs_failed"] += 1
+            if status == "disconnected":
+                self.counters["source_lost"] = self.counters.get("source_lost", 0) + 1
             self._set_state({"finished": "ended", "interrupted": "stopped"}.get(status, "disconnected"), error)
             self.current = {"visible": 0, "decided": 0, "analyzing": 0, "analyzing_by_reason": {}, "stale_decision": 0}
         self.flush(force=True)
@@ -237,6 +248,8 @@ class CameraTelemetry:
         if frame is not None and getattr(frame, "shape", None) is not None:
             H, W = frame.shape[:2]
         with self.lock:
+            if self.run["first_mono"] is not None and self.last_frame_mono is not None:
+                self.run["max_gap_sec"] = max(self.run["max_gap_sec"], round(now - self.last_frame_mono, 2))
             self.last_frame_mono = now
             self.counters["frames_processed"] += 1
             self.run["frames"] += 1
@@ -265,6 +278,7 @@ class CameraTelemetry:
                 self.signal["no_signal"] = std < NO_SIGNAL_STD
                 if self.signal["no_signal"]:
                     self.counters["no_signal_frames"] += 1
+                    self.run["no_signal"] += 1
                 if digest == self._last_sig:
                     self._same_since = self._same_since or now
                 else:
@@ -336,6 +350,8 @@ class CameraTelemetry:
             lag = list(self.lag)
             cov = self.cov
             open_never = sum(1 for tr in self.tracks.values() if not tr["decided"])
+            open_ages = [tr["last"] - tr["first"] for tr in self.tracks.values() if not tr["decided"]]
+            open_long = sum(1 for a in open_ages if a >= LONG_UNEVALUATED_SEC)
             out = {
                 "camera_id": self.camera_id,
                 "updated_at": _iso(self.wall()),
@@ -359,6 +375,8 @@ class CameraTelemetry:
                     "tracks_closed": cov["tracks_closed"],
                     "tracks_closed_never_evaluated": cov["tracks_closed_never_evaluated"],
                     "tracks_open_not_yet_evaluated": open_never,
+                    "open_unevaluated_long": open_long,
+                    "open_unevaluated_max_sec": round(max(open_ages), 1) if open_ages else 0.0,
                     "never_evaluated_reason": dict(cov["never_evaluated_reason"]),
                     "never_evaluated_duration_sec": percentiles(cov["never_evaluated_sec"], (50, 95)),
                     "current": dict(self.current),
@@ -383,7 +401,12 @@ class CameraTelemetry:
                              "stale_decision": cur["stale_decision"],
                              "track_frames": s["coverage"]["track_frames"],
                              "track_frames_unevaluated": s["coverage"]["track_frames_unevaluated"],
+                             "track_frames_analyzing": s["coverage"]["track_frames_analyzing"],
+                             "unevaluated_by_reason": s["coverage"]["unevaluated_by_reason"],
                              "tracks_closed_never_evaluated": s["coverage"]["tracks_closed_never_evaluated"],
+                             "never_evaluated_max_sec": s["coverage"]["never_evaluated_duration_sec"]["max"],
+                             "open_unevaluated_long": s["coverage"]["open_unevaluated_long"],
+                             "open_unevaluated_max_sec": s["coverage"]["open_unevaluated_max_sec"],
                              "tracks_seen": s["coverage"]["tracks_seen"]},
                 "reconnects": s["counters"]["reconnect_attempts"]}
 
@@ -421,6 +444,8 @@ def health_flags(s: dict) -> list:
         flags.append("lagging")
     if s["coverage"]["current"]["analyzing"]:
         flags.append("unevaluated_persons")
+    if s["coverage"].get("open_unevaluated_long"):
+        flags.append("unevaluated_long")                   # >= LONG_UNEVALUATED_SEC karar alamayan kişi var
     return flags
 
 

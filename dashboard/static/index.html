@@ -145,7 +145,8 @@
   .pill.stale, .pill.run_end { background: var(--warn); } .pill.orphan, .pill.unknown { background: #6b7580; }
   .pill.running { background: var(--series); } .pill.finished { background: var(--ok); }
   .pill.error { background: var(--bad); } .pill.interrupted { background: var(--warn); }
-  .pill.abandoned { background: #6b7580; }
+  .pill.abandoned { background: #6b7580; } .pill.disconnected { background: #b45309; }
+  .cov-note { font-size: 13px; color: var(--ink-soft); margin: 6px 0 0; }
   .legacy { font-style: italic; color: var(--warn); }
   .why { display: block; font-size: 12px; color: var(--ink-soft); margin-top: 2px; }
   .thumb { width: 44px; height: 56px; object-fit: cover; background: #0c0f12; display: block; cursor: zoom-in; }
@@ -226,6 +227,14 @@
     <div class="box">
       <h2>Şu an görünen kişiler</h2>
       <div id="peopleWrap" class="scroll"></div>
+    </div>
+
+    <div class="box">
+      <h2>Analiz kapsamı (kamera bazlı)</h2>
+      <div id="covWrap" class="scroll"><div class="empty">Dedektör sağlık özeti gelince burada görünür.</div></div>
+      <p class="cov-note">Değerlendirilemeyen kişiler "Uygun" sayılmaz; sistem onlar hakkında baret/yelek kararı
+        vermemiştir. Saha için kabul edilebilir kapsam eşiği tanımlanmadı (İSG onayı gerekir). Track sayısı kişi
+        sayısı değildir; oranlar dedektör başlangıcından beridir.</p>
     </div>
 
     <div class="box">
@@ -310,6 +319,7 @@
         <option value="">Tümü</option><option value="running">Çalışıyor</option><option value="finished">Bitti</option>
         <option value="interrupted">Durduruldu</option><option value="error">Hata</option>
         <option value="abandoned">Yanıt vermeden kapandı</option>
+        <option value="disconnected">Bağlantı koptu</option>
       </select></label>
       <div class="actions"><button type="submit" class="primary">Uygula</button><button type="button" id="rReset">Sıfırla</button></div>
     </form>
@@ -385,6 +395,7 @@ function syncCam(c) {
   const t = ensureTile(c), m = c.meta, s = c.summary;
   const waiting = m.status === "waiting_for_detector";
   t.tag.textContent = waiting ? `${c.name} · bekleniyor…`
+    : m.status === "reconnecting" ? `${c.name} · bağlantı yok`
     : `${c.name} · video ${fmtT(s.t)} · ${m.width}×${m.height} · ${m.proc_fps} kare/sn`;
   t.el.classList.toggle("alarm", s.viol > 0);
   t.el.classList.toggle("off", camDown(c));
@@ -464,6 +475,25 @@ function renderPeople(cams) {
     : '<div class="empty">Şu an hiçbir kadrajda kimse yok.</div>';
 }
 
+/* ---------- FAZ 10-A: analiz kapsamı (yalnız gösterim; PPE kararı değişmez) ---------- */
+function renderCoverage(cams) {
+  const pct = (a, b) => b ? `%${(100 * a / b).toFixed(1)}` : "–";
+  const rows = cams.filter(c => c.meta.health && c.meta.health.coverage).map(c => {
+    const v = c.meta.health.coverage, tf = v.track_frames || 0, un = v.track_frames_unevaluated || 0;
+    const why = Object.entries(v.unevaluated_by_reason || {}).filter(([, n]) => n > 0)
+      .map(([k, n]) => `${WHY[k] || k} ${pct(n, tf)}`).join(", ");
+    const longTxt = v.open_unevaluated_long ? `${v.open_unevaluated_long} kişi (en uzun ${v.open_unevaluated_max_sec} sn)` : "yok";
+    return `<tr><td>${esc(c.name)}</td><td>${pct(tf - un, tf)}</td><td>${pct(un, tf)}${why ? " (" + esc(why) + ")" : ""}</td>` +
+      `<td>${v.analyzing ?? 0}</td><td>${esc(longTxt)}</td>` +
+      `<td>${v.tracks_closed_never_evaluated ?? 0} / ${v.tracks_seen ?? 0}${v.never_evaluated_max_sec ? " (en uzun " + v.never_evaluated_max_sec + " sn)" : ""}</td></tr>`;
+  }).join("");
+  $("covWrap").innerHTML = rows
+    ? `<table><thead><tr><th>Kamera</th><th>Kapıdan geçen track-kare</th><th>Değerlendirilemeyen track-kare (neden)</th>` +
+      `<th>Şu an değerlendirilemeyen kişi</th><th>Uzun süredir (≥10 sn) değerlendirilemeyen</th>` +
+      `<th>Hiç karar almadan kaybolan track / tüm track</th></tr></thead><tbody>${rows}</tbody></table>`
+    : '<div class="empty">Dedektör sağlık özeti gelince burada görünür.</div>';
+}
+
 /* ---------- durum döngüsü ---------- */
 async function tick() {
   try {
@@ -492,6 +522,7 @@ async function tick() {
     c.className = cls; $("connText").textContent = txt;
 
     renderPeople(d.cameras);
+    renderCoverage(d.cameras);
 
     // dashboard yeniden başladıysa uyarı sayacı sıfırlanır
     if (d.last_alert_id < after) { after = 0; total = 0; $("nTotal").textContent = 0; clearFeed(); }
@@ -546,7 +577,9 @@ const REASON = {
   no_start_event: "Başlangıç olayı kaydedilmemiş",
   run_abandoned: "Run rapor göndermeden kapandı (uzlaştırıldı)" };
 const RUN_STATUS = { running: "Çalışıyor", finished: "Bitti", interrupted: "Durduruldu", error: "Hata",
-                     abandoned: "Yanıt vermeden kapandı" };
+                     abandoned: "Yanıt vermeden kapandı", disconnected: "Bağlantı koptu" };
+const END_REASON = { eof: "dosya sonu", user_stop: "kullanıcı durdurdu", source_lost: "kaynak bağlantısı koptu",
+                     source_lost_after_stall: "görüntü dondu/kayboldu, sonra koptu", exception: "dedektör hatası" };
 const EVENT_TYPE = { start: "Başladı", ongoing: "Sürüyor", end: "Bitti" };
 const SNAP_RE = /^\/snapshots\/alert_[0-9a-f-]{36}\.jpg$/;
 const TZ = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch (e) { return "UTC"; } })();
@@ -818,7 +851,8 @@ function renderCameras(cams) {
     : el("div", { class: "empty", text: "Henüz kayıtlı kamera yok." }));
 }
 function runStatusCell(r) {
-  const why = r.liveness === "live" ? "canlı" : r.liveness === "no_heartbeat" ? "canlılık sinyali yok" : "";
+  const end = r.report && END_REASON[r.report.end_reason];
+  const why = r.liveness === "live" ? "canlı" : r.liveness === "no_heartbeat" ? "canlılık sinyali yok" : (end || "");
   return el("td", null, pill(r.status, RUN_STATUS[r.status] || r.status), el("span", { class: "why", text: why }));
 }
 const runDur = r => r.finished_at ? fmtDur((new Date(r.finished_at) - new Date(r.started_at)) / 1000) : "–";
@@ -933,7 +967,7 @@ let ME = null, CSRF = null, LIVE_OK = false, liveTimer = null;
 const ROLE_TR = { admin: "Yönetici", supervisor: "Sorumlu", viewer: "İzleyici" };
 function clearUserData() {         // önceki kullanıcının verisi (görüntüler dahil) gizli DOM'da kalmasın
   for (const id of ["hTable", "rTable", "rCams", "sTiles", "sChart", "sCams", "sStatusTbl", "sDailyTable",
-                    "detailBody", "peopleWrap"]) $(id).replaceChildren();
+                    "detailBody", "peopleWrap", "covWrap"]) $(id).replaceChildren();
   for (const id of ["hStatus", "sStatus", "rStatus"]) setStatus(id, "");
   $("hMore").hidden = true; $("rMore").hidden = true; $("hRunChip").hidden = true;
   H.cursor = null; H.run = null; R.cursor = null; lastDaily = [];

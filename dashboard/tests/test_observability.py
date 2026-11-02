@@ -151,3 +151,19 @@ def test_percentiles_helper():
     p = ops.percentiles([1.0, 2.0, 3.0, 4.0])
     assert p["p50"] == 2.5 and p["max"] == 4.0 and p["n"] == 4
     assert ops.percentiles([])["p99"] is None
+
+
+def test_coverage_fields_whitelisted_for_operator_panel(api, anon, reg):
+    """FAZ 10-A: kamera bazlı kapsam paneli için birikimli alanlar geçer; bilinmeyen neden/anahtar düşer."""
+    cov = {"visible": 2, "decided": 1, "analyzing": 1, "track_frames": 100, "track_frames_unevaluated": 91,
+           "track_frames_analyzing": 95, "unevaluated_by_reason": {"edge": 90, "low_conf": 1, "isim": 5},
+           "tracks_closed_never_evaluated": 4, "never_evaluated_max_sec": 23.9, "open_unevaluated_long": 1,
+           "open_unevaluated_max_sec": 14.2, "tracks_seen": 9, "kisi_adi": "Ali"}
+    p = frame_payload([], run_id=uuid.uuid4(), health={"state": "connected", "flags": ["unevaluated_long"],
+                                                       "coverage": cov})
+    assert post_frame(anon, p).status_code == 200
+    h = api.get("/api/state").json()["cameras"][0]["meta"]["health"]
+    c = h["coverage"]
+    assert c["unevaluated_by_reason"] == {"edge": 90, "low_conf": 1} and "kisi_adi" not in c
+    assert (c["track_frames"], c["track_frames_unevaluated"], c["open_unevaluated_long"]) == (100, 91, 1)
+    assert c["never_evaluated_max_sec"] == 23.9 and h["flags"] == ["unevaluated_long"]

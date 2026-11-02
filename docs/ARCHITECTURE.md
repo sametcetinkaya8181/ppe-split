@@ -83,6 +83,9 @@ birleşimidir (`missing_at_start` ayrıca verilir).
   `POST /ingest/events` / `/ingest/report` ile FIFO teslim eder; kareler `/ingest/frame` ile olaysız ve kalıcı
   olmadan gider. Zorla öldürme sonrası yeniden başlatmada bekleyenler aynı kimliklerle gönderilir (gerçek GPU
   testiyle doğrulandı). Ayrıntı ve garanti sınırları: [OUTBOX.md](OUTBOX.md). `OUTBOX_ENABLED=0` eski davranış.
+- Run bitiş durumu (FAZ 10-A): dosya sonu `finished/eof`, kullanıcı durdurması `interrupted/user_stop`, canlı akış
+  kopması `disconnected/source_lost[_after_stall]`, hata `error/exception`. Terminal run canlılık/olayla yeniden
+  açılmaz; farklı ikinci rapor 409. Yeniden bağlanma üstel geri çekilmeli (2→60 sn) ve her bağlantı yeni run'dır.
 - Rapor göndermeden kapanan run `running` kalır; `maintenance.runs reconcile` (onaylı) onu `abandoned` yapar
   (sahte `finished` yok); sonradan canlılık/rapor gelirse durum geri döner.
 

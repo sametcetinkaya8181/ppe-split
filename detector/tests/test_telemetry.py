@@ -196,7 +196,8 @@ def test_run_once_records_telemetry_without_changing_events(_prod):
     snap = tm.for_camera("camT").snapshot(resources=False)
     assert snap["counters"]["frames_processed"] == len(SCENARIO)
     assert snap["counters"]["events_start"] == sum(e["type"] == "start" for e in s1.events) == 2
-    assert snap["state"] == "ended" and snap["run"]["source_kind"] == "rtsp"
+    assert snap["state"] == "disconnected" and snap["run"]["source_kind"] == "rtsp"   # canlı akış bitti = kopma
+    assert snap["counters"]["source_lost"] == 1
     assert snap["timings_ms"]["frame_ms"]["n"] == len(SCENARIO) and snap["timings_ms"]["monitor_ms"]["n"] > 0
     text = json.dumps(snap) + json.dumps(tm.for_camera("camT").compact())
     assert "S3cr3t" not in text and "10.0.0.5" not in text and "admin" not in text
@@ -289,3 +290,25 @@ def test_stalled_flag_and_flusher_writes_without_frames(tmp_path, monkeypatch):
         _t.sleep(0.02)
     data = json.loads((tmp_path / "camS.health.json").read_text(encoding="utf-8"))
     assert "stalled" in data["flags"]
+
+
+def test_long_unevaluated_tracks_counted_and_flagged_in_compact():
+    """FAZ 10-A: >= LONG_UNEVALUATED_SEC (10 sn) karar alamayan kişi ayrıca sayılır ve işaretlenir."""
+    t, c = tel()
+    edge = (3, (0, 100, 100, 400), 0.9)                       # kadraj kenarı: hiç değerlendirilmez
+    _feed(t, c, [[edge]] * 120)                               # 12 sn
+    s = t.snapshot(resources=False)
+    assert s["coverage"]["open_unevaluated_long"] == 1 and s["coverage"]["open_unevaluated_max_sec"] >= 10
+    assert "unevaluated_long" in s["flags"]
+    cov = t.compact()["coverage"]
+    assert cov["unevaluated_by_reason"]["edge"] == 120 and cov["track_frames_analyzing"] == 120
+    assert cov["open_unevaluated_long"] == 1 and cov["track_frames_unevaluated"] == 120
+
+
+def test_new_run_does_not_inherit_stall_from_previous_run():
+    t, c = tel()
+    t.frame(t=0.1, frame=frame(), persons=[], statuses={}, stage_ms={})
+    t.run_ended("disconnected")
+    c.t += 30.0                                               # yeniden bağlanma beklemesi
+    t.run_started("r2", loop=2, source_kind="rtsp", fps=10.0, width=WH[0], height=WH[1], vid_stride=1)
+    assert "stalled" not in t.snapshot(resources=False)["flags"]
