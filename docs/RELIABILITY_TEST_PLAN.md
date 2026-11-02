@@ -159,3 +159,17 @@ Doğrulama: `result.json` → `delivery`, `runs_by_camera`, `memprobe.summary`; 
 (`REL_PROJECT=ppe-eval`, 127.0.0.1:8200; ppe-rel ve ana yığına dokunmaz; önce/sonra izolasyon kontrolü). Ground-truth
 yoksa doğruluk metrikleri `INSUFFICIENT_GROUND_TRUTH`; alarmlar insan inceleme kaydı olmadan `UNREVIEWED`. Model veya
 karar değişikliği önerileri `--previous <taban result.json>` ile karşılaştırmalı koşulur.
+
+## 11. FAZ 10-A.5A — ML hata analizi (tanı)
+
+`tools/reliability/failure_analysis.py collect --baseline <10-A.4 koşusu>` (ayrıntı:
+`docs/PHASE_10A5A_FAILURE_ANALYSIS_REPORT.md` §2): üretim karar zinciri (`pipeline.run_video`) değiştirilmeden
+yalnız gözlem kancalarıyla çalışır — tracker öncesi ham YOLO tespitleri, tracker'ın tüm sınıf çıktısı ve ayrı model
+örneğiyle eşik altı "sonda" (`--probe-conf`, varsayılan 0.05). Önce 10-A.4 iziyle birebir eşdeğerlik doğrulanır
+(kimlik/kutu/güven + olaylar). Analiz (`detector/evaluation/failure.py`, birim testli) eşya kanıtının kaybolduğu
+katmanı, iz kaybı/parçalanma adaylarını, kapsam kırılımını ve yalnız karar katmanının "ne olurdu" yeniden
+oynatmalarını üretir; yeniden oynatma değişiklik yokken üretim olaylarını birebir vermek zorundadır. Kör insan
+inceleme paketi (`review_pack/`) model çizimi olmayan orijinal kareleri, ayrı çizimli kopyaları ve doldurulmadıkça
+araç tarafından reddedilen `review_template.json`'u içerir. Gizli bilgi denetimi:
+`tools/reliability/secret_audit.py` (değer yazdırmaz; üretim token/parolalarının test yığınlarına, kanıt
+klasörüne ve Git geçmişine sızmadığını doğrular).
