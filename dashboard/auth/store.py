@@ -166,7 +166,9 @@ def revoke_user_sessions(s: Session, user_id: int, reason: str) -> int:
 
 # ---------------------------------------------------------------- denetim kaydı
 AUDIT_DETAIL_KEYS = {"reason", "path", "method", "role", "target_user_id", "changes", "camera_id", "snapshot",
-                     "required_role", "profile", "count", "run_id", "threshold_minutes"}
+                     "required_role", "profile", "count", "run_id", "threshold_minutes",
+                     # 0007 insan incelemesi: karar notu (serbest metin) denetim kaydına YAZILMAZ
+                     "incident_id", "review_status", "previous_status", "version"}
 
 
 def audit(s: Session, event: str, outcome: str, *, user_id=None, ip=None, detail=None) -> None:

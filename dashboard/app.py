@@ -17,14 +17,16 @@ from typing import Optional
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, WebSocket
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.exc import DBAPIError, IntegrityError, SQLAlchemyError
 
 import observability as ops
 from auth import routes as auth_routes
 from auth import security
-from auth.routes import require
+from auth import store as auth_store
+from auth.routes import require, require_csrf
 from auth.security import AuthCtx
-from db import history
+from db import history, reviews
 from db import repository as repo
 from db.health import check_ready
 from db.session import get_engine, get_session
@@ -779,6 +781,16 @@ def _source_out(r: dict) -> dict:
             "source_ref": r["source_ref"]}
 
 
+def _review_out(r: dict, detail: bool) -> dict:
+    """İnsan inceleme durumu (yaşam döngüsü 'status' alanından ayrı). detail=False (viewer): karar sonucu ve zamanı;
+    inceleyen adı, not ve etiketleme adaylığı yalnız supervisor+."""
+    out = {"status": r["review_status"], "version": r["review_version"], "reviewed_at": _iso(r["reviewed_at"])}
+    if detail:
+        out.update(reviewed_by=r["reviewed_by_username"], note=r["review_note"],
+                   annotation_candidate=r["annotation_candidate"])
+    return out
+
+
 def _incident_out(r: dict, images: bool = True) -> dict:
     return {"incident_id": str(r["incident_id"]), "camera_id": r["camera_id"], **_source_out(r),
             "run_id": str(r["run_id"]), "track_id": r["pid"],
@@ -792,7 +804,7 @@ def _incident_out(r: dict, images: bool = True) -> dict:
             "missing": _missing_text(r["missing_helmet"], r["missing_vest"]),
             "missing_at_start": _missing_text(r["start_missing_helmet"], r["start_missing_vest"]),
             "event_count": r["event_count"], "ongoing_count": r["ongoing_count"],
-            **_snapshot(r["snapshot_path"], images)}
+            **_snapshot(r["snapshot_path"], images), "review": _review_out(r, images)}
 
 
 def _run_out(r: dict) -> dict:
@@ -828,15 +840,17 @@ def history_incidents(camera_id: Optional[str] = CameraQ, run_id: Optional[uuid.
                       date_from: Optional[str] = Query(None, alias="from"),
                       date_to: Optional[str] = Query(None, alias="to"),
                       status: list[str] = Query([]), equipment: Optional[str] = None,
+                      review_status: list[str] = Query([]),
                       limit: int = Query(50, ge=1, le=200), cursor: Optional[str] = Query(None, max_length=200),
                       ctx: AuthCtx = Depends(require("viewer"))):
     f, t = _range_params(date_from, date_to)
     statuses = _enum_list(status, history.STATUSES, "status")
+    review_statuses = _enum_list(review_status, reviews.REVIEW_STATUSES, "review_status")
     if equipment is not None:
         _enum_list([equipment], history.EQUIPMENT, "equipment")
     res = _read(history.list_incidents, camera_id=camera_id, run_id=run_id, date_from=f, date_to=t,
                 statuses=statuses, equipment=equipment, limit=limit, cursor=cursor,
-                active_window=ACTIVE_WINDOW_SEC, camera_scope=ctx.scope)
+                active_window=ACTIVE_WINDOW_SEC, camera_scope=ctx.scope, review_statuses=review_statuses)
     images = ctx.at_least("supervisor")
     return {"items": [_incident_out(r, images) for r in res["items"]], "total": res["total"],
             "next_cursor": res["next_cursor"], "limit": limit}
@@ -866,6 +880,101 @@ def history_incident(incident_id: uuid.UUID, ctx: AuthCtx = Depends(require("vie
                              if ctx.model_scores else {}),
                           "box": e["box"], **_snapshot(e["snapshot_path"], images)} for e in r["timeline"]],
             "timeline_truncated": r["timeline_truncated"]}
+
+
+# ---------------- insan incelemesi (FAZ 10-A.6; karar yalnız yetkili kullanıcıdan gelir, otomatik atanmaz) ------
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+
+
+class ReviewIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: str = Field(max_length=24)
+    expected_version: int = Field(ge=0, le=1_000_000)       # istemcinin gördüğü version; UNREVIEWED = 0
+    request_id: uuid.UUID                                    # tekrar gönderimde aynı değer (idempotency)
+    note: Optional[str] = Field(None, max_length=reviews.NOTE_MAX)
+    annotation_candidate: bool = False
+
+
+def _review_state(r: dict, detail: bool = True) -> dict:
+    return _review_out({"review_status": r["status"], "review_version": r["version"], "reviewed_at": r["reviewed_at"],
+                        "reviewed_by_username": r["reviewed_by_username"], "review_note": r["note"],
+                        "annotation_candidate": r["annotation_candidate"]}, detail)
+
+
+def _review_scope(incident_id: uuid.UUID, ctx: AuthCtx) -> str:
+    cam = _read(reviews.incident_camera, incident_id)
+    if cam is None or not ctx.camera_ok(cam):            # yok VEYA kapsam dışı: aynı yanıt
+        raise HTTPException(status_code=404, detail="incident bulunamadı")
+    return cam
+
+
+@app.post("/api/history/incidents/{incident_id}/review")
+def review_incident(incident_id: uuid.UUID, body: ReviewIn, request: Request,
+                    ctx: AuthCtx = Depends(require_csrf("supervisor"))):
+    """İnsan inceleme kararı. 200: kaydedildi (veya aynı request_id ile önceden kaydedilmiş: replayed=true).
+    409: expected_version güncel değil (güncel durum döner). 422: geçersiz karar/geçiş. 404: yok veya kapsam dışı."""
+    note = (body.note or "").strip() or None
+    if note is not None and _CONTROL.search(note):
+        _http_error(422, [{"loc": ["body", "note"], "msg": "not kontrol karakteri içeremez", "type": "value_error"}])
+    try:
+        cam = _review_scope(incident_id, ctx)
+    except HTTPException:
+        security.audit("incident_review", "denied", conn=request, user_id=ctx.user_id,
+                       detail={"reason": "not_found_or_out_of_scope", "incident_id": str(incident_id)})
+        raise
+    ip = security.client_ip(request)
+
+    def run(s):
+        res = reviews.decide(s, incident_id, status=body.status, expected_version=body.expected_version,
+                             reviewer_id=ctx.user_id, request_id=body.request_id, note=note,
+                             annotation_candidate=body.annotation_candidate)
+        if not res["replayed"]:                       # karar ve denetim kaydı aynı transaction'da
+            auth_store.audit(s, "incident_review", "success", user_id=ctx.user_id, ip=ip,
+                             detail={"incident_id": str(incident_id), "camera_id": cam,
+                                     "review_status": res["review"]["status"],
+                                     "previous_status": res["previous_status"], "version": res["review"]["version"]})
+        return res
+
+    def invalid(exc: reviews.ReviewError):
+        security.audit("incident_review", "failure", conn=request, user_id=ctx.user_id,
+                       detail={"reason": exc.code, "incident_id": str(incident_id)})
+        _http_error(422, [{"loc": ["body", exc.field], "msg": str(exc), "type": exc.code}])
+
+    try:
+        with get_session() as s, s.begin():
+            res = run(s)
+    except reviews.ReviewError as exc:
+        invalid(exc)
+    except (reviews.ReviewConflict, IntegrityError) as exc:
+        # eşzamanlı aynı request_id: ilk istek kazandıysa sonucu yeniden döndür
+        try:
+            again = _read(reviews.replay, incident_id, body.request_id, body.status)
+        except reviews.ReviewError as err:                # aynı anahtar eşzamanlı olarak başka kararla kullanıldı
+            invalid(err)
+        if again is not None:
+            return {"incident_id": str(incident_id), "review": _review_state(again), "replayed": True}
+        cur = exc.current if isinstance(exc, reviews.ReviewConflict) else _read(reviews.current, incident_id)
+        security.audit("incident_review", "failure", conn=request, user_id=ctx.user_id,
+                       detail={"reason": "version_conflict", "incident_id": str(incident_id)})
+        _http_error(409, {"code": "version_conflict", "msg": "karar başka bir kullanıcı tarafından değiştirildi; "
+                                                             "güncel durumu inceleyip yeniden gönderin",
+                          "current": _review_state(cur)})
+    except (SQLAlchemyError, RuntimeError):
+        _rlog("db_review", "UYARI: inceleme kararı yazılamadı; 503 dönülüyor.")
+        _http_error(503, "veritabanı şu an kullanılamıyor; tekrar deneyin")
+    return {"incident_id": str(incident_id), "review": _review_state(res["review"]), "replayed": res["replayed"]}
+
+
+@app.get("/api/history/incidents/{incident_id}/reviews")
+def review_history(incident_id: uuid.UUID, ctx: AuthCtx = Depends(require("supervisor"))):
+    """Karar geçmişi (yalnız ekleme; en eski önce). Notlar ve inceleyen adları içerdiği için supervisor+."""
+    _review_scope(incident_id, ctx)
+    cur = _read(reviews.current, incident_id)
+    return {"incident_id": str(incident_id), "current": _review_state(cur),
+            "history": [{"version": h["version"], "status": h["status"], "previous_status": h["previous_status"],
+                         "reviewed_by": h["reviewer"], "decided_at": _iso(h["decided_at"]), "note": h["note"],
+                         "annotation_candidate": h["annotation_candidate"]}
+                        for h in _read(reviews.history, incident_id)]}
 
 
 @app.get("/api/history/summary")

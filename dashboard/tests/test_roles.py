@@ -54,6 +54,8 @@ def test_app_role_attributes_and_table_privileges(app_db):
     assert {t: p for t, p in s["tables"].items() if t in TABLES} == dict.fromkeys(TABLES, ["SELECT", "INSERT", "UPDATE"])
     assert s["tables"]["alembic_version"] == ["SELECT"]
     assert s["tables"]["audit_log"] == ["SELECT", "INSERT"]                 # denetim kaydı yalnız ekleme
+    assert s["tables"]["incident_review_history"] == ["SELECT", "INSERT"]   # 0007: inceleme geçmişi yalnız ekleme
+    assert s["tables"]["incident_reviews"] == ["SELECT", "INSERT", "UPDATE"]  # güncel karar (iyimser kilit)
     assert s["tables"]["app_users"] == s["tables"]["user_sessions"] == ["SELECT", "INSERT", "UPDATE"]
 
 
@@ -61,6 +63,8 @@ def test_app_role_attributes_and_table_privileges(app_db):
     "DELETE FROM violation_events", "DELETE FROM cameras", "TRUNCATE incidents", "DROP TABLE violation_events",
     "ALTER TABLE cameras ADD COLUMN x int", "CREATE TABLE kotu (id int)", "UPDATE alembic_version SET version_num = 'x'",
     "CREATE ROLE kotu_rol", "CREATE DATABASE kotu_db",
+    "DELETE FROM incident_reviews", "DELETE FROM incident_review_history", "UPDATE incident_review_history SET note = 'x'",
+    "TRUNCATE incident_review_history",
 ])
 def test_app_role_denied(app_db, stmt):
     denied(url_for(role=APP_ROLE), stmt)
@@ -112,7 +116,7 @@ def test_existing_install_ownership_transfer_and_migrator_ddl(scratch_db):
     command.upgrade(alembic_cfg(mig), "head")
     with psycopg_conn(mig) as c:
         assert roles.grants(c, app=APP_ROLE) is True                    # sahip olarak yeniden yetki
-        assert c.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0006"
+        assert c.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0007"
 
     app = url_for(scratch_db, APP_ROLE)
     with psycopg_conn(app) as c:                                        # veri korunmuş, yeni sütun yazılabilir

@@ -84,7 +84,7 @@ def test_0005_downgrade_refuses_with_abandoned_rows(api, engine, db_url):
     runs.main(["reconcile", "--apply", "--confirm", "1"])
     with pytest.raises(RuntimeError, match="uzlaştırılmış"):
         command.downgrade(alembic_cfg(), "0004")
-    sql(engine, "TRUNCATE violation_events, incidents, person_run_reports, detector_runs, cameras, user_sessions, "
-                "audit_log, app_users")
+    sql(engine, "TRUNCATE incident_review_history, incident_reviews, violation_events, incidents, "
+                "person_run_reports, detector_runs, cameras, user_sessions, audit_log, app_users")
     command.downgrade(alembic_cfg(), "0004")
     command.upgrade(alembic_cfg(), "head")

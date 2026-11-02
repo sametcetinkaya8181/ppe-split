@@ -106,8 +106,8 @@ def conn(engine):
         tx.rollback()
 
 
-ALL_TABLES = ("violation_events, incidents, person_run_reports, detector_runs, cameras, user_sessions, audit_log, "
-              "app_users")
+ALL_TABLES = ("incident_review_history, incident_reviews, violation_events, incidents, person_run_reports, "
+              "detector_runs, cameras, user_sessions, audit_log, app_users")
 ORIGIN = {"Origin": "http://testserver"}
 TEST_PASSWORD = "Test-Parola-2026!x"
 

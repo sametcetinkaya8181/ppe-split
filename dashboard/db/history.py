@@ -24,7 +24,11 @@ Durum (status) — öncelik sırasıyla:
             PPEMonitor kişiyi unutmuş olabilir; neden ancak run raporunda kesinleşir), superseded,
             missing_metadata (run tamamlanmış, rapor metadata'sı yok), metadata_overflow (incident raporda
             yok ve rapor listesi taşmış), not_reported (incident raporda yok, taşma da yok).
-Tüm durumlar SQL'de hesaplanır; böylece filtre, sayfalama ve özet aynı tanımı kullanır."""
+Tüm durumlar SQL'de hesaplanır; böylece filtre, sayfalama ve özet aynı tanımı kullanır.
+
+İnsan inceleme durumu (review_status, 0007) yaşam döngüsü durumundan BAĞIMSIZDIR: incident_reviews satırı yoksa
+UNREVIEWED. Mevcut sayımlar (incidents/verified/by_status) inceleme kararından etkilenmez; inceleme sayımları ayrı
+(by_review_status) verilir. 'verified' alanı start olayının varlığıdır, insan doğrulaması DEĞİLDİR."""
 import base64
 import binascii
 import json
@@ -34,6 +38,7 @@ from datetime import date, datetime, timedelta, timezone
 from sqlalchemy import Numeric, String, and_, case, cast, false, func, literal, not_, or_, select, text, tuple_
 from sqlalchemy.orm import Session
 
+from . import reviews
 from .models import Camera, DetectorRun, Incident, PersonRunReport, ViolationEvent
 
 STATUSES = ("closed", "active", "stale", "run_end", "orphan", "unknown")
@@ -151,6 +156,7 @@ def _incident_rows(*, camera_id=None, run_id=None, date_from=None, date_to=None,
         else_="not_reported")
 
     missing_h, missing_v = agg.c.missing_helmet, agg.c.missing_vest
+    rev, rev_on, rev_cols = reviews.review_columns(INC.c.id)
     return (select(
         INC.c.id.label("incident_id"), INC.c.run_id, INC.c.camera_id, INC.c.pid,
         CAM.c.name.label("camera_current_name"), RUN.c.source_label, RUN.c.source_kind, RUN.c.source_ref,
@@ -159,10 +165,11 @@ def _incident_rows(*, camera_id=None, run_id=None, date_from=None, date_to=None,
         agg.c.started_at, agg.c.ended_at, agg.c.last_event_at, agg.c.event_count, agg.c.ongoing_count,
         agg.c.start_count, agg.c.end_count, missing_h, missing_v, agg.c.start_missing_helmet,
         agg.c.start_missing_vest, agg.c.snapshot_path, agg.c.video_first_sec, agg.c.video_last_sec,
-        has_start.label("verified"), status.label("status"), reason.label("status_reason"))
+        has_start.label("verified"), status.label("status"), reason.label("status_reason"), *rev_cols)
         .select_from(agg.join(INC, INC.c.id == agg.c.incident_id)
                      .join(RUN, RUN.c.id == INC.c.run_id)
-                     .join(CAM, CAM.c.id == INC.c.camera_id))
+                     .join(CAM, CAM.c.id == INC.c.camera_id)
+                     .outerjoin(rev, rev_on))
         .where(*([agg.c.started_at >= date_from] if date_from is not None else []),
                *([agg.c.started_at < date_to] if date_to is not None else []))
         .subquery("inc"))
@@ -175,7 +182,8 @@ def _equipment_clause(q, equipment):
 
 
 def list_incidents(s: Session, *, camera_id=None, run_id=None, date_from=None, date_to=None, statuses=(),
-                   equipment=None, limit=50, cursor=None, active_window: float, camera_scope=None) -> dict:
+                   equipment=None, limit=50, cursor=None, active_window: float, camera_scope=None,
+                   review_statuses=()) -> dict:
     q = _incident_rows(camera_id=camera_id, run_id=run_id, date_from=date_from, date_to=date_to,
                        active_window=active_window, camera_scope=camera_scope)
     conds = []
@@ -183,6 +191,8 @@ def list_incidents(s: Session, *, camera_id=None, run_id=None, date_from=None, d
         conds.append(q.c.status.in_(list(statuses)))
     if equipment:
         conds.append(_equipment_clause(q, equipment))
+    if review_statuses:
+        conds.append(q.c.review_status.in_(list(review_statuses)))
     total = s.execute(select(func.count()).select_from(q).where(*conds)).scalar_one()
     if cursor:
         at, key = decode_cursor(cursor)
@@ -230,6 +240,8 @@ def summary(s: Session, *, camera_id=None, run_id=None, date_from=None, date_to=
     ).select_from(q)).mappings().one()
     by_status = dict.fromkeys(STATUSES, 0) | {r.status: r.n for r in s.execute(
         select(q.c.status, func.count().label("n")).group_by(q.c.status))}
+    by_review = dict.fromkeys(reviews.REVIEW_STATUSES, 0) | {r.review_status: r.n for r in s.execute(
+        select(q.c.review_status, func.count().label("n")).group_by(q.c.review_status))}
 
     cams = s.execute(select(
         q.c.camera_id, func.min(q.c.camera_current_name).label("camera_name"),
@@ -256,7 +268,7 @@ def summary(s: Session, *, camera_id=None, run_id=None, date_from=None, date_to=
     cam_ev = {r.camera_id: r.n for r in s.execute(
         select(E.c.camera_id, func.count().label("n")).where(*ev_conds).group_by(E.c.camera_id))}
 
-    return {"incidents": dict(tot), "by_status": by_status,
+    return {"incidents": dict(tot), "by_status": by_status, "by_review_status": by_review,
             "events": {"total": sum(events.values()), **events},
             "by_camera": [dict(c) | {"events": cam_ev.get(c["camera_id"], 0)} for c in cams],
             "daily": _fill_days(daily, date_from, date_to, tz, s)}

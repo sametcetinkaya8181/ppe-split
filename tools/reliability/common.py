@@ -126,7 +126,8 @@ def up(build=True) -> None:
 
 def reset_data() -> None:
     """Yalnız izole test DB'sindeki olay tablolarını boşaltır (senaryolar arası temiz başlangıç)."""
-    psql("TRUNCATE violation_events, incidents, person_run_reports, detector_runs, cameras RESTART IDENTITY")
+    psql("TRUNCATE incident_review_history, incident_reviews, violation_events, incidents, person_run_reports, "
+         "detector_runs, cameras RESTART IDENTITY")
 
 
 # ---------------------------------------------------------------- oturum

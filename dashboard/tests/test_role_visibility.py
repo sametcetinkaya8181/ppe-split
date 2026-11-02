@@ -79,7 +79,8 @@ def test_user_role_alias_is_stored_as_supervisor(api):
     login(c, "saha_user")
     body = c.get("/api/auth/me").json()
     assert body["user"]["role"] == "supervisor"
-    assert body["permissions"] == {"live": True, "snapshots": True, "admin": False, "model_scores": False}
+    assert body["permissions"] == {"live": True, "snapshots": True, "review": True, "admin": False,
+                                   "model_scores": False}
 
 
 def test_cli_creates_user_role_without_password_argument(api, monkeypatch, capsys):
