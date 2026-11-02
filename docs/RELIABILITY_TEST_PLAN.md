@@ -173,3 +173,15 @@ inceleme paketi (`review_pack/`) model çizimi olmayan orijinal kareleri, ayrı 
 araç tarafından reddedilen `review_template.json`'u içerir. Gizli bilgi denetimi:
 `tools/reliability/secret_audit.py` (değer yazdırmaz; üretim token/parolalarının test yığınlarına, kanıt
 klasörüne ve Git geçmişine sızmadığını doğrular).
+
+## 12. FAZ 10-A.5B — Kontrollü ML ve karar deneyleri
+
+`tools/reliability/experiments_5b.py cache` GPU'da bir kez çalışır: kare başına tüm sınıflar conf >= 0.05 (tam
+hassasiyet), Person >= 0.25 kutuları için ikinci aşama kırpıntı doğrulaması ve sentetik bozulmalar (küçültme /
+karartma). `experiments_5b.py run <önbellek>` tamamen çevrimdışıdır: ByteTrack önbellekten yeniden oynatılır
+(üretim girdisi 10-A.5A tanı izini birebir vermek zorundadır), karar katmanı `detector/evaluation/experiments.py`
+`ExperimentalMonitor` ile koşar (varsayılan yapılandırma `PPEMonitor` ile birebir; rastgele dizilerle birim testli).
+Her deney tek değişkenlidir; birleşik varyantlar ayrıca koşulur. Sentetik senaryo paketi (S01-S15) yalnız yazılım
+mantığı regresyonudur. Değerlendirme süreci üretim gizli anahtarlarını taşımaz
+(`detector/evaluation/isolation.py`: `production_settings()` sonrası temizlik + test alt süreçlerinde
+`assert_env_isolated`). Ayrıntı: `docs/PHASE_10A5B_EXPERIMENT_REPORT.md`.
