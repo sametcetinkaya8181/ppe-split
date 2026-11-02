@@ -30,6 +30,8 @@ VIDEOS = {"V1": DETECTOR / "videos" / "16533594_1920_1080_25fps.mp4",
           "V2": DETECTOR / "videos" / "5434223-hd_1920_1080_24fps.mp4",
           "V3": DETECTOR / "videos" / "8965526-uhd_2160_3840_25fps.mp4"}
 ADMIN_USER = "reladmin"
+sys.path.insert(0, str(DETECTOR))
+from evaluation.isolation import assert_env_isolated            # noqa: E402  (FAZ 10-A.5B: yalnız test kimliği)
 
 
 def utc() -> str:
@@ -79,6 +81,7 @@ def compose(*args, check=True, capture=True, timeout=600) -> subprocess.Complete
     # okuduğu detector/.env -> INGEST_TOKEN) test yığınına sızmasın: yığın anahtarları alt süreçten çıkarılır.
     keys = set(env())
     sub_env = {k: v for k, v in os.environ.items() if k not in keys}
+    assert_env_isolated(sub_env, context="compose")
     return subprocess.run(cmd, check=check, capture_output=capture, text=True, timeout=timeout, env=sub_env)
 
 
@@ -168,6 +171,7 @@ def detector_env(outbox_dir: Path, *, stride=2, token=None, url=None, extra=None
                 "LOOP": "1", "DEVICE": "0", "IMGSZ": "640", "STREAM_WIDTH": "640", "START_DELAY": "2",
                 "PYTHONUNBUFFERED": "1", "YOLO_OFFLINE": "1", "HEALTH_EVERY": "2"})
     out.update(extra or {})
+    assert_env_isolated(out, context="dedektör")
     return out
 
 

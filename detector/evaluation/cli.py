@@ -69,9 +69,12 @@ def _csv(path: Path, rows: list[dict]):
 
 
 def production_settings() -> dict:
-    """detector.py modül sabitleri (detector/.env + varsayılanlar) — üretimle aynı kaynak."""
+    """detector.py modül sabitleri (detector/.env + varsayılanlar) — üretimle aynı kaynak. `import detector`
+    detector/.env'i süreç ortamına yüklediğinden gizli anahtarlar hemen silinir (FAZ 10-A.5B, isolation.py)."""
     import detector as d
     import ppe_core as core
+    from .isolation import scrub_process_env
+    scrub_process_env(module=d)
     model_path = Path(d.MODEL_PATH)
     if not model_path.is_absolute():
         model_path = DETECTOR_DIR / model_path

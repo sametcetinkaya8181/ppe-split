@@ -124,6 +124,7 @@ def start_cams(out: Path, n: int, a) -> list:
         envf.write_text(f"INGEST_TOKEN={e['INGEST_TOKEN']}\n", encoding="utf-8")
         env = {**os.environ, "DASHBOARD_URL": c.base_url(), "INGEST_TOKEN": e["INGEST_TOKEN"],
                "DETECTOR_ENV_FILE": str(envf), "PYTHONUNBUFFERED": "1"}
+        c.assert_env_isolated(env, context=cam)
         video = c.VIDEOS["V1" if i % 2 == 0 else "V2"]
         args = [str(c.PY), str(c.HERE / "eventgen.py"), "--camera", cam, "--outbox", str(ob), "--ledger",
                 str(out / f"ledger_{cam}.jsonl"), "--duration", str(a.minutes * 60 + 30), "--run-seconds",
