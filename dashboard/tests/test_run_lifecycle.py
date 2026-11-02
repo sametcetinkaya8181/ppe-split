@@ -104,8 +104,8 @@ def test_0006_downgrade_refuses_with_disconnected_rows(api, engine, db_url):
     assert api.post("/ingest/report", json=report(r, status="disconnected", end_reason="source_lost")).status_code == 200
     with pytest.raises(RuntimeError, match="disconnected"):
         command.downgrade(alembic_cfg(), "0005")
-    sql(engine, "TRUNCATE violation_events, incidents, person_run_reports, detector_runs, cameras, user_sessions, "
-                "audit_log, app_users")
+    sql(engine, "TRUNCATE incident_review_history, incident_reviews, violation_events, incidents, "
+                "person_run_reports, detector_runs, cameras, user_sessions, audit_log, app_users")
     command.downgrade(alembic_cfg(), "0005")
     with pytest.raises(Exception):                                   # 0005 şeması yeni durumu kabul etmez
         sql(engine, "INSERT INTO cameras (id, name) VALUES ('dc', 'x'); "

@@ -226,6 +226,60 @@ class AuditLog(Base):
     detail: Mapped[dict | None] = mapped_column(JSONB)
 
 
+REVIEW_DECISIONS = ("CONFIRMED_VIOLATION", "FALSE_ALARM", "INCONCLUSIVE")   # 0007; UNREVIEWED = satır yok
+REVIEW_NOTE_MAX = 500
+
+
+class IncidentReview(Base):
+    """0007: incident'ın GÜNCEL insan inceleme kararı (otomatik kayıttan ayrı). Satır yoksa UNREVIEWED; eski
+    kayıtlar için geri doldurma yapılmaz. version: iyimser kilit (her karar +1). Yaşam döngüsü (active/closed...)
+    olaylardan türetilir ve bu tablodan ETKİLENMEZ. İnsan kararı model ground-truth'u değildir."""
+    __tablename__ = "incident_reviews"
+    __table_args__ = (
+        CheckConstraint(_in("status", REVIEW_DECISIONS), name="status"),
+        CheckConstraint("version >= 1", name="version_positive"),
+        CheckConstraint(f"note IS NULL OR char_length(note) BETWEEN 1 AND {REVIEW_NOTE_MAX}", name="note_length"),
+        Index("ix_incident_reviews_status", "status"),
+    )
+
+    incident_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("incidents.id", ondelete="RESTRICT"),
+                                                   primary_key=True)
+    status: Mapped[str] = mapped_column(String(24))
+    version: Mapped[int] = mapped_column(Integer)
+    reviewed_by: Mapped[int] = mapped_column(BigInteger, ForeignKey("app_users.id", ondelete="RESTRICT"))
+    reviewed_at: Mapped[datetime] = mapped_column(TZ, server_default=func.now())
+    note: Mapped[str | None] = mapped_column(Text)
+    # yalnız gelecekteki etiketleme iş akışına ADAY işareti; dışa aktarım/eğitim verisi değildir
+    annotation_candidate: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+
+
+class IncidentReviewHistory(Base):
+    """0007: her inceleme kararı (yalnız ekleme; ppe_app'te UPDATE/DELETE yok). Önceki karar previous_status ile
+    izlenebilir. request_id: istemcinin tekrar gönderim (idempotency) anahtarı."""
+    __tablename__ = "incident_review_history"
+    __table_args__ = (
+        UniqueConstraint("incident_id", "version"),
+        CheckConstraint(_in("status", REVIEW_DECISIONS), name="status"),
+        CheckConstraint(f"previous_status IS NULL OR {_in('previous_status', REVIEW_DECISIONS)}",
+                        name="previous_status"),
+        CheckConstraint("version >= 1", name="version_positive"),
+        CheckConstraint("(version = 1) = (previous_status IS NULL)", name="first_has_no_previous"),
+        CheckConstraint(f"note IS NULL OR char_length(note) BETWEEN 1 AND {REVIEW_NOTE_MAX}", name="note_length"),
+        Index("ix_incident_review_history_decided", text("decided_at DESC"), text("id DESC")),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    incident_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("incidents.id", ondelete="RESTRICT"))
+    version: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(24))
+    previous_status: Mapped[str | None] = mapped_column(String(24))
+    reviewer_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("app_users.id", ondelete="RESTRICT"))
+    decided_at: Mapped[datetime] = mapped_column(TZ, server_default=func.now())
+    note: Mapped[str | None] = mapped_column(Text)
+    annotation_candidate: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    request_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), unique=True)
+
+
 class PersonRunReport(Base):
     __tablename__ = "person_run_reports"
     __table_args__ = (

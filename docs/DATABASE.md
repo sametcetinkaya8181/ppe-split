@@ -11,6 +11,8 @@ PostgreSQL 17, şema yalnızca Alembic ile yönetilir (`create_all()` yok). Head
 | `incidents` | `id` (UUID) | tek bir `(run_id, camera_id, pid)` üçlüsüne bağlı |
 | `violation_events` | `id` (identity), `event_id` UNIQUE | `incident_id` bileşik FK, `event_type`, ekipman bayrakları, oranlar, `video_time_sec` (video saniyesi) ≠ `occurred_at` (UTC), `ingested_at`, `box`, `snapshot_path` |
 | `person_run_reports` | `(run_id, pid)` | run sonu kişi özeti (upsert) |
+| `incident_reviews` | `incident_id` (FK `incidents`) | **0007:** güncel insan inceleme kararı (`CONFIRMED_VIOLATION` / `FALSE_ALARM` / `INCONCLUSIVE`), `version` (iyimser kilit), `reviewed_by` (FK `app_users`), `note` (≤500), `annotation_candidate`. Satır yok = `UNREVIEWED` |
+| `incident_review_history` | `id` (identity), `request_id` UNIQUE, `(incident_id, version)` UNIQUE | **0007:** her karar, `previous_status` ile; `ppe_app` için yalnız ekleme (UPDATE/DELETE yok) |
 
 Kısıtlar: bir incident'ta en fazla bir start ve bir end (kısmi unique index), end olayında eksik ekipman yok,
 snapshot yalnızca start'ta ve `^snapshots/[A-Za-z0-9_.-]+\.jpg$`.
@@ -25,6 +27,7 @@ snapshot yalnızca start'ta ve `^snapshots/[A-Za-z0-9_.-]+\.jpg$`.
 | 0004 | `app_users`, `user_sessions`, `audit_log` (FAZ 6) | kullanıcı/denetim kaydı varsa durur |
 | 0005 | `detector_runs.status` += `abandoned`; `reconciled_at`, `reconcile_reason` (FAZ 7) | uzlaştırılmış run varsa durur |
 | 0006 | `detector_runs.status` += `disconnected` (canlı kaynak koptu; ayrıntı `report_metadata.end_reason`) (FAZ 10-A) | `disconnected` run varsa durur |
+| 0007 | `incident_reviews`, `incident_review_history` (FAZ 10-A.6 insan incelemesi; mevcut tablolarda satır değişmez, geri doldurma yok) | inceleme kararı varsa durur (`-x allow_data_loss=1` ile bilerek) |
 
 ### Çökmüş run uzlaştırması (FAZ 7)
 

@@ -47,6 +47,7 @@ def protected(seed):
             ("/api/history/summary", "viewer"), ("/api/history/cameras", "viewer"), ("/api/history/runs", "viewer"),
             (f"/api/history/runs/{seed['r1']}", "viewer"), ("/api/auth/me", "viewer"),
             ("/api/state", "supervisor"), ("/api/alerts", "supervisor"), ("/api/report", "supervisor"),
+            (f"/api/history/incidents/{seed['inc1']}/reviews", "supervisor"),
             (seed["snap1"], "supervisor"), ("/api/admin/users", "admin"), ("/api/admin/audit", "admin")]
 
 

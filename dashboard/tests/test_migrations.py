@@ -9,10 +9,10 @@ from sqlalchemy import create_engine, inspect, text
 from db import Base
 from tests.conftest import alembic_cfg
 
-HEAD = "0006"                                   # güncel Alembic head
+HEAD = "0007"                                   # güncel Alembic head
 
 TABLES = {"cameras", "detector_runs", "violation_events", "person_run_reports", "incidents", "app_users",
-          "user_sessions", "audit_log"}
+          "user_sessions", "audit_log", "incident_reviews", "incident_review_history"}
 
 
 def _tables(url):
@@ -147,7 +147,7 @@ def test_check_constraint_names_match_orm(engine):
     with engine.connect() as c:
         db = set(c.execute(text("SELECT conname FROM pg_constraint WHERE contype = 'c' "
                                 "AND conrelid::regclass::text = ANY(:t)"), {"t": list(TABLES)}).scalars())
-    assert db == orm and len(db) == 33                  # 0003: +2, 0004: +7 (0005 yalnız status CHECK değiştirir)
+    assert db == orm and len(db) == 41                  # 0003: +2, 0004: +7, 0007: +8 (0005/0006 yalnız status CHECK)
 
 
 def test_no_create_all_in_app_code():

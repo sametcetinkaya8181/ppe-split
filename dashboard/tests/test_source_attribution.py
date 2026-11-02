@@ -133,7 +133,8 @@ def test_db_down_heartbeat_fast_but_events_still_503(api, monkeypatch):
 # ================================================================ migration 0003 (yalnızca ppe_test)
 def test_0003_downgrade_upgrade_and_no_backfill(db_url, engine):
     with engine.begin() as c:
-        c.execute(text("TRUNCATE violation_events, incidents, person_run_reports, detector_runs, cameras"))
+        c.execute(text("TRUNCATE incident_review_history, incident_reviews, violation_events, incidents, person_run_reports, "
+                           "detector_runs, cameras"))
         c.execute(text("INSERT INTO cameras (id, name) VALUES ('cam1', 'Güncel ad')"))
         c.execute(text("INSERT INTO detector_runs (id, camera_id, source_label) VALUES (:r, 'cam1', 'Etiket')"),
                   {"r": uuid.uuid4()})
@@ -150,4 +151,5 @@ def test_0003_downgrade_upgrade_and_no_backfill(db_url, engine):
     finally:
         command.upgrade(alembic_cfg(), "head")
         with engine.begin() as c:
-            c.execute(text("TRUNCATE violation_events, incidents, person_run_reports, detector_runs, cameras"))
+            c.execute(text("TRUNCATE incident_review_history, incident_reviews, violation_events, incidents, person_run_reports, "
+                           "detector_runs, cameras"))

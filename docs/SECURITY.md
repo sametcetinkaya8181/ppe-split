@@ -33,7 +33,9 @@ Kapsam dışı kayıt **404** döner (varlığı açığa vurulmaz).
 | `/health/ready` | ✓ `{"status"}` | | | ✓ ayrıntı | snapshot dizini yazılamazsa 503 |
 | `POST /api/auth/login` | ✓ | | | | aynı köken, JSON |
 | `/api/auth/me`, `logout`, `password` | ✗ 401 | ✓ | ✓ | ✓ | logout/password: CSRF |
-| `/api/history/*` | ✗ 401 | ✓ kapsam | ✓ kapsam | ✓ kapsam | viewer'a görüntü bağlantısı verilmez |
+| `/api/history/*` | ✗ 401 | ✓ kapsam | ✓ kapsam | ✓ kapsam | viewer'a görüntü bağlantısı, inceleyen adı ve inceleme notu verilmez |
+| `POST /api/history/incidents/{id}/review` | ✗ 401 | ✗ 403 | ✓ kapsam | ✓ kapsam | CSRF + aynı köken; kapsam dışı 404; karar + denetim kaydı tek transaction (FAZ 10-A.6) |
+| `/api/history/incidents/{id}/reviews` | ✗ 401 | ✗ 403 | ✓ kapsam | ✓ kapsam | karar geçmişi (notlar dahil) |
 | `/snapshots/{alert_<uuid>.jpg}` | ✗ 401 | ✗ 403 | ✓ kapsam | ✓ kapsam | yalnız DB'de referansı olan dosya; erişim denetlenir |
 | `/api/state`, `/api/alerts`, `/api/report` | ✗ 401 | ✗ 403 | ✓ kapsam | ✓ kapsam | |
 | `/ws` | ✗ | ✗ | ✓ kapsam | ✓ kapsam | aynı köken; ~15 sn'de oturum yeniden doğrulanır |
@@ -42,8 +44,8 @@ Kapsam dışı kayıt **404** döner (varlığı açığa vurulmaz).
 | `/ingest/frame`, `/ingest/report` | yalnız `X-Token` | | | | oturum çerezi dikkate alınmaz |
 | `/docs`, `/redoc`, `/openapi.json` | 404 | | | | kapalı |
 
-`supervisor` bugün yazma işlemi yapmaz (arayüzde inceleme/onay işlevi yok); görüntü ve canlı yayın erişimi viewer'dan
-ayıran kişisel veri yetkisidir.
+`supervisor`'ın tek yazma işlemi insan inceleme kararıdır (FAZ 10-A.6; arayüzü FAZ 10-A.7); görüntü ve canlı yayın
+erişimi viewer'dan ayıran kişisel veri yetkisidir. İnceleme notu serbest metindir ve denetim kaydına yazılmaz.
 
 ## Makine kimliği ve token rotasyonu
 
