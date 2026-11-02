@@ -172,3 +172,11 @@ izole yığın `ppe-bench` (127.0.0.1:8200). Komut: `REL_DETECTOR_PY=<dedektör 
 tools/reliability/steelbench.py run --images`. Ayrıntı, yorumlama ve lisans kısıtları: `docs/STEELBENCH.md`.
 `common.py` artık `REL_PROJECT` / `REL_ENV_FILE` / `REL_DEFAULT_PORT` ile ayrı bir izole yığın seçebilir; varsayılan
 (`ppe-rel`, `rel.env`, 8100) değişmedi.
+
+## 11. FAZ 10-A.4 — Tekrarlanabilir video taban çizgisi (Windows CUDA, `baseline_eval.py`)
+
+`tools/reliability/baseline_eval.py run` (ayrıntı: `docs/PHASE_10A4_WINDOWS_BASELINE_REPORT.md` §4): V1–V3, VID_STRIDE=2,
+üretim karar zincirinin çevrimdışı izi + gerçek `detector.py` ile uçtan uca teslim, kendi izole yığınında
+(`REL_PROJECT=ppe-eval`, 127.0.0.1:8200; ppe-rel ve ana yığına dokunmaz; önce/sonra izolasyon kontrolü). Ground-truth
+yoksa doğruluk metrikleri `INSUFFICIENT_GROUND_TRUTH`; alarmlar insan inceleme kaydı olmadan `UNREVIEWED`. Model veya
+karar değişikliği önerileri `--previous <taban result.json>` ile karşılaştırmalı koşulur.

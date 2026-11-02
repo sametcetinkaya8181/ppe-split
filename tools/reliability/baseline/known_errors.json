@@ -1,0 +1,18 @@
+{
+  "schema": "ppe-known-errors/1",
+  "note": "Bilinen hatalar 2026-11-02 Mac (Apple MPS, VID_STRIDE=2) testinin raporundan KULLANICI BİLDİRİMİ olarak aktarıldı. Ham kanıt (tools/reliability/output/20261102T124324Z_capture_accuracy/) bu makinede yok; video SHA-256 değerleri o testte kayıtlı değil (reference_sha256 = null). Numaralandırma (E-01..E-04) bu dosyada verildi; Mac raporundaki numaralarla eşleştiği doğrulanmadı. Sinyal kuralları yalnız 'bu hata türünün belirtisi var mı' sorusunu yanıtlar; ilgili alarmlar ASLA doğru tespit sayılmaz.",
+  "known_errors": [
+    {"id": "E-01", "video": "V2", "kind": "false_alarm", "title": "Kısmen örtülen koyu baret baretsiz değerlendirildi",
+     "reference_source": "kullanıcı bildirimi (Mac raporu), doğrulanmadı", "reference_sha256": null,
+     "signal": {"kind": "incident_missing", "item": "helmet"}},
+    {"id": "E-02", "video": "V3", "kind": "false_alarm", "title": "Kırmızı iş makinesi kolu kişi olarak algılandı",
+     "reference_source": "kullanıcı bildirimi (Mac raporu), doğrulanmadı", "reference_sha256": null,
+     "signal": {"kind": "any_incident"}},
+    {"id": "E-03", "video": "V2", "kind": "coverage_gap", "title": "Kadraj kenarındaki uygun çalışan yeterince değerlendirilemedi",
+     "reference_source": "kullanıcı bildirimi (Mac raporu), doğrulanmadı", "reference_sha256": null,
+     "signal": {"kind": "edge_unevaluated_track", "min_sec": 2.0}},
+    {"id": "E-04", "video": "V1", "kind": "tracking_fragmentation", "title": "İki çalışan için altı farklı takip kimliği",
+     "reference_source": "kullanıcı bildirimi (Mac raporu), doğrulanmadı", "reference_sha256": null,
+     "signal": {"kind": "id_fragmentation", "min_ratio": 2.0}}
+  ]
+}

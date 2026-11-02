@@ -75,7 +75,11 @@ def base_url() -> str:
 
 def compose(*args, check=True, capture=True, timeout=600) -> subprocess.CompletedProcess:
     cmd = ["docker", "compose", "-p", PROJECT, "-f", str(COMPOSE), "--env-file", str(ENV_FILE), *args]
-    return subprocess.run(cmd, check=check, capture_output=capture, text=True, timeout=timeout)
+    # Compose'da kabuk ortamı --env-file'ı EZER. Süreç ortamına yüklenmiş üretim değerleri (ör. detector modülünün
+    # okuduğu detector/.env -> INGEST_TOKEN) test yığınına sızmasın: yığın anahtarları alt süreçten çıkarılır.
+    keys = set(env())
+    sub_env = {k: v for k, v in os.environ.items() if k not in keys}
+    return subprocess.run(cmd, check=check, capture_output=capture, text=True, timeout=timeout, env=sub_env)
 
 
 def container(service: str) -> str:
