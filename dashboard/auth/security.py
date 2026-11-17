@@ -152,6 +152,14 @@ class AuthCtx:
         Filtre sunucu yanıtında uygulanır (arayüzde gizlemek yeterli değildir); karar alanları herkes için aynıdır."""
         return self.at_least("admin")
 
+    @property
+    def technical(self) -> bool:
+        """Teknik/tanı ayrıntıları yalnız admin'e gider: kaynak dosya/akış adresi, run (döngü, fps, çözünürlük, kişi-iz
+        raporu), takip (iz) numarası, video saniyesi, ham olay sayıları, kutu koordinatı, analiz kapsamı ve dedektör
+        sağlık özeti. user/viewer operasyonel karar alanlarını (kamera, eksik ekipman, durum, zaman, süre) görür.
+        Filtre sunucu yanıtında uygulanır; arayüzde gizlemek yeterli değildir."""
+        return self.at_least("admin")
+
 
 _CACHE: dict = {}                  # token_hash -> (AuthCtx, cache_until, last_touch, validated_at)
 _CACHE_LOCK = threading.Lock()

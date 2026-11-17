@@ -92,7 +92,8 @@ def multipart(payload):
 
 
 def main():
-    sh("docker", "compose", "exec", "-T", "db", "pg_isready", "-q")
+    # FAZ 01: LAN test dashboard'u ana `db` kümesine değil, `tests` profilinin geçici `test-db` kümesine bağlanır
+    # (compose depends_on: healthy). Ana veritabanına hiçbir komut gönderilmez.
     try:
         sh("docker", "network", "create", "--subnet", SUBNET, NET)
         sh("docker", "compose", "--profile", "test", "run", "-d", "--name", "ppe-lantest-dash",
@@ -127,9 +128,8 @@ def main():
     finally:
         sh("docker", "rm", "-f", "ppe-lantest-caddy", "ppe-lantest-dash", check=False)
         sh("docker", "network", "rm", NET, check=False)
-        sh("docker", "compose", "exec", "-T", "db", "sh", "-c",
-           'psql -q -U "$POSTGRES_USER" -d postgres -c "DROP DATABASE IF EXISTS ppe_lan_test WITH (FORCE)"',
-           check=False)
+        # geçici küme tmpfs'tedir: kaldırılınca ppe_lan_test de yok olur (ana kümeye DROP gönderilmez)
+        sh("docker", "compose", "--profile", "test", "rm", "-sf", "test-db", check=False)
     for st, n, d in results:
         print(f"[{st}] {n}" + (f" — {d}" if d else ""))
     failed = sum(1 for r in results if r[0] == "FAIL")

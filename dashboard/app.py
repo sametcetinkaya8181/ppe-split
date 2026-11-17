@@ -3,6 +3,7 @@ PC'deki dedektör her kamera için /ingest/frame ile etiketli kare + olay gönde
 Tarayıcı tüm kareleri TEK WebSocket (/ws) üzerinden alır (tarayıcının 6 bağlantı sınırına takılmamak için)."""
 import asyncio
 import hmac
+import json
 import logging
 import os
 import re
@@ -52,6 +53,27 @@ WS_RECHECK_SEC = float(os.getenv("WS_RECHECK_SEC", 15))   # açık WebSocket'te 
 log = logging.getLogger("ppe.ingest")
 for _w in security.validate_config(tuple(t for t in (INGEST_TOKEN, INGEST_TOKEN_NEXT) if t)):
     log.warning(_w)
+
+
+def load_build_info(path: Path = Path(__file__).with_name("build-info.json")) -> dict:
+    """FAZ 01 build provenance (Dockerfile / scripts/build_image.py). Dosya yoksa (kaynaktan çalıştırma, testler)
+    veya bozuksa UNVERIFIED. verified=True yalnız release + temiz ağaç + bilinen commit için."""
+    keys = ("revision", "branch", "created", "tree_state", "version", "kind")
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        info = {k: str(raw.get(k, "unknown"))[:80] for k in keys}
+    except (OSError, ValueError, AttributeError):
+        info = {k: "unknown" for k in keys}
+    info["verified"] = (info["kind"] == "release" and info["tree_state"] == "clean"
+                        and len(info["revision"]) == 40 and all(c in "0123456789abcdef" for c in info["revision"]))
+    return info
+
+
+BUILD_INFO = load_build_info()
+if not BUILD_INFO["verified"]:
+    log.warning("UYARI: DEVELOPMENT/UNVERIFIED imaj (kind=%s, tree=%s, revision=%s) — üretim/pilot için "
+                "scripts/build_image.py --release ile temiz commit'ten oluşturulmuş imaj kullanın.",
+                BUILD_INFO["kind"], BUILD_INFO["tree_state"], BUILD_INFO["revision"][:12])
 
 SNAP_DIR = DATA_DIR / "snapshots"
 SNAP_DIR.mkdir(parents=True, exist_ok=True)
@@ -599,8 +621,21 @@ def _pick(d, keys: tuple, extra: tuple = ()) -> dict:
     return {k: d[k] for k in keys + extra if isinstance(d, dict) and k in d}
 
 
-def _alert_out(a: dict, scores: bool) -> dict:
-    return _pick(a, ALERT_KEYS, ALERT_SCORE_KEYS if scores else ())
+# Teknik/tanı alanları (yalnız admin, ctx.technical): takip no, video saniyesi, run kimliği, kutu koordinatı.
+ALERT_TECH_KEYS = ("pid", "t", "run_id", "box")
+
+
+def _alert_out(a: dict, scores: bool, technical: bool = True) -> dict:
+    keys = ALERT_KEYS if technical else tuple(k for k in ALERT_KEYS if k not in ALERT_TECH_KEYS)
+    return _pick(a, keys, ALERT_SCORE_KEYS if scores else ())
+
+
+def _plain_meta(m: dict) -> dict:
+    """Admin dışı rol: yalnız kameranın izlenebilirlik durumu (dedektör durumu, kısa hata, sağlık bayrakları).
+    Kaynak adresi, çözünürlük, fps, döngü, analiz kapsamı ve olay kuyruğu teknik ayrıntıdır; gönderilmez."""
+    h = m.get("health") if isinstance(m.get("health"), dict) else {}
+    flags = [f for f in h.get("flags") or [] if isinstance(f, str)]
+    return {"status": m.get("status"), "error": m.get("error"), "health": {"flags": flags}}
 
 
 def _scrub_scores(v):
@@ -614,13 +649,14 @@ def _scrub_scores(v):
 
 @app.get("/api/state")
 def state(after: int = 0, ctx: AuthCtx = Depends(require("supervisor"))):
-    scores = ctx.model_scores
+    scores, tech = ctx.model_scores, ctx.technical
     with LOCK:
         cams = sorted((c for c in CAMS.values() if ctx.camera_ok(c.id)), key=lambda c: c.idx)
-        new_alerts = [_alert_out(a, scores) for a in ALERTS if a["id"] > after and ctx.camera_ok(a.get("cam", ""))]
+        new_alerts = [_alert_out(a, scores, tech) for a in ALERTS
+                      if a["id"] > after and ctx.camera_ok(a.get("cam", ""))]
         seq = ALERT_SEQ
     cameras = [{"id": c.id, "idx": c.idx, "name": c.name,
-                "meta": _meta(c) if scores else _scrub_scores(_meta(c)),
+                "meta": (_meta(c) if scores else _scrub_scores(_meta(c))) if tech else _plain_meta(_meta(c)),
                 "summary": _pick(c.summary, SUMMARY_KEYS),
                 "people": [_pick(p, PEOPLE_KEYS, PEOPLE_SCORE_KEYS if scores else ()) for p in c.people]}
                for c in cams]
@@ -631,13 +667,13 @@ def state(after: int = 0, ctx: AuthCtx = Depends(require("supervisor"))):
 
 @app.get("/api/alerts")
 def alerts(ctx: AuthCtx = Depends(require("supervisor"))):
-    scores = ctx.model_scores
+    scores, tech = ctx.model_scores, ctx.technical
     with LOCK:
-        return [_alert_out(a, scores) for a in reversed(ALERTS) if ctx.camera_ok(a.get("cam", ""))]
+        return [_alert_out(a, scores, tech) for a in reversed(ALERTS) if ctx.camera_ok(a.get("cam", ""))]
 
 
 @app.get("/api/report")
-def report(ctx: AuthCtx = Depends(require("supervisor"))):
+def report(ctx: AuthCtx = Depends(require("admin"))):      # kişi-iz (track) bazlı video özeti: teknik ayrıntı
     extra = REPORT_SCORE_KEYS if ctx.model_scores else ()
     with LOCK:
         cams = sorted((c for c in CAMS.values() if ctx.camera_ok(c.id)), key=lambda c: c.idx)
@@ -666,7 +702,8 @@ def ops_metrics(ctx: AuthCtx = Depends(require("admin"))):
                         "width": m.get("width"), "height": m.get("height"),
                         "people": c.summary.get("people"), "analyzing": c.summary.get("analyzing"),
                         "health": m.get("health"), "outbox": m.get("outbox")})
-    return {"generated_at": _iso(datetime.now(timezone.utc)), **ops.REG.snapshot(), "cameras": cameras,
+    return {"generated_at": _iso(datetime.now(timezone.utc)), "build": BUILD_INFO, **ops.REG.snapshot(),
+            "cameras": cameras,
             "postgres": _DB_STATUS.get(), "snapshot_storage": _STORAGE.get(),
             "notes": ["sayaçlar dashboard süreci yeniden başlayınca sıfırlanır",
                       "track sayısı benzersiz kişi sayısı değildir; ANALIZ uygun sayılmaz"]}
@@ -783,7 +820,8 @@ def _source_out(r: dict) -> dict:
 
 def _review_out(r: dict, detail: bool) -> dict:
     """İnsan inceleme durumu (yaşam döngüsü 'status' alanından ayrı). detail=False (viewer): karar sonucu ve zamanı;
-    inceleyen adı, not ve etiketleme adaylığı yalnız supervisor+."""
+    inceleyen adı, not ve etiketleme adaylığı yalnız supervisor+. İnceleme operasyonel bir karardır, teknik ayrıntı
+    değildir: ctx.technical filtresi (FAZ 10-A.7) 'review' alanını çıkarmaz."""
     out = {"status": r["review_status"], "version": r["review_version"], "reviewed_at": _iso(r["reviewed_at"])}
     if detail:
         out.update(reviewed_by=r["reviewed_by_username"], note=r["review_note"],
@@ -791,7 +829,22 @@ def _review_out(r: dict, detail: bool) -> dict:
     return out
 
 
-def _incident_out(r: dict, images: bool = True) -> dict:
+# Admin dışı rolde geçmiş kayıtlarından çıkarılan teknik alanlar (ctx.technical).
+INCIDENT_TECH_KEYS = ("source_kind", "source_ref", "run_id", "track_id", "video_first_sec", "video_last_sec",
+                      "event_count", "ongoing_count")
+TIMELINE_TECH_KEYS = ("event_id", "ingested_at", "video_time_sec", "box")
+
+
+def _strip(d: dict, keys: tuple) -> dict:
+    return {k: v for k, v in d.items() if k not in keys}
+
+
+def _incident_out(r: dict, images: bool = True, technical: bool = True) -> dict:
+    out = _incident_full(r, images)
+    return out if technical else _strip(out, INCIDENT_TECH_KEYS)
+
+
+def _incident_full(r: dict, images: bool = True) -> dict:
     return {"incident_id": str(r["incident_id"]), "camera_id": r["camera_id"], **_source_out(r),
             "run_id": str(r["run_id"]), "track_id": r["pid"],
             "status": r["status"], "status_reason": r["status_reason"], "verified": r["verified"],
@@ -852,7 +905,7 @@ def history_incidents(camera_id: Optional[str] = CameraQ, run_id: Optional[uuid.
                 statuses=statuses, equipment=equipment, limit=limit, cursor=cursor,
                 active_window=ACTIVE_WINDOW_SEC, camera_scope=ctx.scope, review_statuses=review_statuses)
     images = ctx.at_least("supervisor")
-    return {"items": [_incident_out(r, images) for r in res["items"]], "total": res["total"],
+    return {"items": [_incident_out(r, images, ctx.technical) for r in res["items"]], "total": res["total"],
             "next_cursor": res["next_cursor"], "limit": limit}
 
 
@@ -865,20 +918,25 @@ def history_incident(incident_id: uuid.UUID, ctx: AuthCtx = Depends(require("vie
     md = r["report_metadata"] if isinstance(r["report_metadata"], dict) else {}
     unclosed = next((u for u in md.get("unclosed_incidents") or []
                      if isinstance(u, dict) and u.get("incident_id") == str(r["incident_id"])), None)
+    timeline = [{"event_id": str(e["event_id"]), "type": e["event_type"],
+                 "occurred_at": _iso(e["occurred_at"]), "ingested_at": _iso(e["ingested_at"]),
+                 "video_time_sec": _num(e["video_time_sec"]),
+                 "missing": _missing_text(e["missing_helmet"], e["missing_vest"]),
+                 **({"helmet_rate": e["helmet_rate"], "vest_rate": e["vest_rate"]} if ctx.model_scores else {}),
+                 "box": e["box"], **_snapshot(e["snapshot_path"], images)} for e in r["timeline"]]
+    camera = {"id": r["camera_id"], "name": r["source_label"], "current_name": r["camera_current_name"]}
+    if not ctx.technical:                       # user/viewer: run, kapanış nedeni ve olay teknik alanları yok
+        return {**_incident_out(r, images, False), "camera": camera,
+                "timeline": [_strip(e, TIMELINE_TECH_KEYS) for e in timeline],
+                "timeline_truncated": r["timeline_truncated"]}
     return {**_incident_out(r, images),
-            "camera": {"id": r["camera_id"], "name": r["source_label"], "current_name": r["camera_current_name"]},
+            "camera": camera,
             "run": {"id": str(r["run_id"]), "status": r["run_status"], "loop_no": r["loop_no"],
                     "started_at": _iso(r["run_started_at"]), "finished_at": _iso(r["run_finished_at"]),
                     "last_seen_at": _iso(r["run_last_seen_at"])},
             "unclosed": ({"reason": unclosed.get("reason"), "video_time_sec": unclosed.get("t")}
                          if unclosed else None),
-            "timeline": [{"event_id": str(e["event_id"]), "type": e["event_type"],
-                          "occurred_at": _iso(e["occurred_at"]), "ingested_at": _iso(e["ingested_at"]),
-                          "video_time_sec": _num(e["video_time_sec"]),
-                          "missing": _missing_text(e["missing_helmet"], e["missing_vest"]),
-                          **({"helmet_rate": e["helmet_rate"], "vest_rate": e["vest_rate"]}
-                             if ctx.model_scores else {}),
-                          "box": e["box"], **_snapshot(e["snapshot_path"], images)} for e in r["timeline"]],
+            "timeline": timeline,
             "timeline_truncated": r["timeline_truncated"]}
 
 
@@ -986,24 +1044,29 @@ def history_summary(camera_id: Optional[str] = CameraQ, run_id: Optional[uuid.UU
     _check_tz(tz)
     res = _read(history.summary, camera_id=camera_id, run_id=run_id, date_from=f, date_to=t, tz=tz,
                 active_window=ACTIVE_WINDOW_SEC, camera_scope=ctx.scope)
+    if not ctx.technical:                       # ham olay kaydı sayıları (başlangıç/sürüyor/bitiş) teknik ayrıntıdır
+        res = {**_strip(res, ("events",)), "by_camera": [_strip(c, ("events",)) for c in res["by_camera"]]}
     return {**res, "filters": {"camera_id": camera_id, "run_id": str(run_id) if run_id else None,
                                "from": _iso(f), "to": _iso(t), "tz": tz}}
 
 
 @app.get("/api/history/cameras")
 def history_cameras(ctx: AuthCtx = Depends(require("viewer"))):
-    return [{"id": c["id"], "name": c["name"], "source_kind": c["source_kind"], "created_at": _iso(c["created_at"]),
+    rows = [{"id": c["id"], "name": c["name"], "source_kind": c["source_kind"], "created_at": _iso(c["created_at"]),
              "last_seen_at": _iso(c["last_seen_at"]), "run_count": c["run_count"],
              "last_run_started_at": _iso(c["last_run_started_at"]), "live_runs": c["live_runs"],
              "incident_count": c["incident_count"], "event_count": c["event_count"]}
             for c in _read(history.list_cameras, active_window=ACTIVE_WINDOW_SEC, camera_scope=ctx.scope)]
+    if ctx.technical:
+        return rows
+    return [{k: c[k] for k in ("id", "name", "last_seen_at", "incident_count")} for c in rows]
 
 
 @app.get("/api/history/runs")
 def history_runs(camera_id: Optional[str] = CameraQ, date_from: Optional[str] = Query(None, alias="from"),
                  date_to: Optional[str] = Query(None, alias="to"), status: list[str] = Query([]),
                  limit: int = Query(50, ge=1, le=200), cursor: Optional[str] = Query(None, max_length=200),
-                 ctx: AuthCtx = Depends(require("viewer"))):
+                 ctx: AuthCtx = Depends(require("admin"))):           # run raporları teknik ayrıntı: yalnız admin
     f, t = _range_params(date_from, date_to)
     statuses = _enum_list(status, RUN_STATUSES, "status")
     res = _read(history.list_runs, camera_id=camera_id, date_from=f, date_to=t, statuses=statuses, limit=limit,
@@ -1013,7 +1076,7 @@ def history_runs(camera_id: Optional[str] = CameraQ, date_from: Optional[str] = 
 
 
 @app.get("/api/history/runs/{run_id}")
-def history_run(run_id: uuid.UUID, ctx: AuthCtx = Depends(require("viewer"))):
+def history_run(run_id: uuid.UUID, ctx: AuthCtx = Depends(require("admin"))):
     r = _read(history.get_run, run_id, active_window=ACTIVE_WINDOW_SEC, camera_scope=ctx.scope)
     if r is None:
         raise HTTPException(status_code=404, detail="run bulunamadı")

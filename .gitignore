@@ -1,4 +1,4 @@
-# ---- Videolar PUSHLANIR (burada listelenmedi: detector/videos/*.mp4 vb. takip edilir) ----
+# ---- Videolar PUSHLANMAZ: *.mp4 aşağıda dışlanır (detector/videos/ yalnız yerelde; lisansı belgelenmemiş) ----
 
 # ---- Görseller (pushlanmaz) ----
 *.jpg
@@ -65,3 +65,7 @@ detector/evaluation/output/
 
 # FAZ 9: güvenilirlik/yük testi çıktıları ve izole test yığınının üretilen sırları (Git dışı)
 tools/reliability/output/
+
+# FAZ 01: yerel build manifestleri ve imaj içinde üretilen build bilgisi (Git dışı)
+build-manifests/
+dashboard/build-info.json

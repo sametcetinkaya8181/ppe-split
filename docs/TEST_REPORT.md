@@ -3,7 +3,28 @@
 Ortam: Windows 11, Docker Desktop (Compose v2.40), PostgreSQL 17.11, dashboard Python 3.11, dedektör Python 3.12,
 NVIDIA RTX 3050 Laptop GPU, Microsoft Edge (headless) + Node 22.11.
 
-## Komutlar
+## FAZ 01 güncellemesi (2026-11-17): test izolasyonu
+
+Dashboard testleri artık **yalnız** `cluster_name=ppe-ephemeral-test` ile başlatılmış, test dışı veritabanı içermeyen
+geçici bir PostgreSQL kümesine bağlanır (`dashboard/tests/db_guard.py`, FAIL-CLOSED; atlatma değişkeni yok). Ortamda
+`DATABASE_URL` / `POSTGRES_PASSWORD` vb. üretim kimlik bilgisi değişkenleri varsa, hedef `db` servisi ise veya küme
+işaretsizse oturum hiçbir veritabanı komutu çalıştırmadan durur. `perf_history`, `lan_server` ve UI fixture'ları da
+aynı korumayı kullanır. Dedektör testleri `DETECTOR_ENV_FILE=none` ile çalışır; `detector/.env` hiçbir yoldan okunmaz
+ve test süreci üretim gizli değeri devralmışsa başlamaz.
+
+```powershell
+python tools/reliability/isolated_dashboard_tests.py                 # dashboard (önerilen; rastgele parola, otomatik temizlik)
+python tools/reliability/isolated_dashboard_tests.py --ui <klasör>   # tarayıcı: ui_check.mjs (Edge)
+$env:CHROME="C:\Program Files\Google\Chrome\Application\chrome.exe"; $env:UI_PYTHON="<websocket-client içeren python>"
+python tools/reliability/isolated_dashboard_tests.py --ui-live <klasör>   # tarayıcı: ui_check_10a7.py (rol görünürlüğü)
+docker compose --profile test run --rm tests; docker compose --profile test rm -sf test-db   # alternatif (ayrı test-db)
+cd detector; .venv\Scripts\python -m pytest
+python -m pytest scripts/tests                                        # build provenance kuralları
+```
+
+Aşağıdaki FAZ 5 komutları tarihî kayıttır; `tests` servisi artık ana `db` yerine ayrı `test-db` kümesini kullanır.
+
+## Komutlar (FAZ 5)
 
 ```powershell
 docker compose --profile test run --rm tests                                   # dashboard (gerçek PostgreSQL)

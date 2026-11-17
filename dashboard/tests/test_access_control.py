@@ -44,9 +44,9 @@ def seed_two_cameras(api):
 def protected(seed):
     """(yol, gereken en düşük rol)."""
     return [("/api/history/incidents", "viewer"), (f"/api/history/incidents/{seed['inc1']}", "viewer"),
-            ("/api/history/summary", "viewer"), ("/api/history/cameras", "viewer"), ("/api/history/runs", "viewer"),
-            (f"/api/history/runs/{seed['r1']}", "viewer"), ("/api/auth/me", "viewer"),
-            ("/api/state", "supervisor"), ("/api/alerts", "supervisor"), ("/api/report", "supervisor"),
+            ("/api/history/summary", "viewer"), ("/api/history/cameras", "viewer"), ("/api/history/runs", "admin"),
+            (f"/api/history/runs/{seed['r1']}", "admin"), ("/api/auth/me", "viewer"),
+            ("/api/state", "supervisor"), ("/api/alerts", "supervisor"), ("/api/report", "admin"),
             (f"/api/history/incidents/{seed['inc1']}/reviews", "supervisor"),
             (seed["snap1"], "supervisor"), ("/api/admin/users", "admin"), ("/api/admin/audit", "admin")]
 
@@ -97,11 +97,13 @@ def test_camera_scope_object_level_authorization(api):
     assert {i["camera_id"] for i in c.get("/api/history/incidents").json()["items"]} == {"cam1"}
     assert c.get(f"/api/history/incidents/{seed['inc2']}").status_code == 404      # UUID bilmek yetmez
     assert c.get(f"/api/history/incidents/{seed['inc1']}").status_code == 200
-    assert c.get(f"/api/history/runs/{seed['r2']}").status_code == 404
-    assert {r["camera_id"] for r in c.get("/api/history/runs").json()["items"]} == {"cam1"}
+    scoped_admin = client_as("admin", cameras=["cam1"])          # run raporları yalnız admin: kapsam yine geçerli
+    assert scoped_admin.get(f"/api/history/runs/{seed['r2']}").status_code == 404
+    assert {r["camera_id"] for r in scoped_admin.get("/api/history/runs").json()["items"]} == {"cam1"}
+    assert scoped_admin.get("/api/history/summary").json()["events"]["total"] == 3
     assert [x["id"] for x in c.get("/api/history/cameras").json()] == ["cam1"]
     s = c.get("/api/history/summary").json()
-    assert [x["camera_id"] for x in s["by_camera"]] == ["cam1"] and s["events"]["total"] == 3
+    assert [x["camera_id"] for x in s["by_camera"]] == ["cam1"] and "events" not in s
     assert c.get(f"/api/history/incidents?camera_id=cam2").json()["total"] == 0
     assert c.get(seed["snap2"]).status_code == 404                                  # kapsam dışı snapshot
     st = c.get("/api/state").json()

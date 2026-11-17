@@ -21,6 +21,7 @@ RANK = {r: i for i, r in enumerate(ROLES)}
 # değeri migration gerektirir). Arayüzde "Kullanıcı" olarak gösterilir.
 ROLE_ALIASES = {"user": "supervisor"}
 ROLE_CHOICES = ROLES + tuple(ROLE_ALIASES)
+ROLE_DISPLAY = {"supervisor": "user"}          # CLI/arayüzde gösterilen ad (saklanan değer değişmez)
 USERNAME_RE = re.compile(r"^[a-z0-9_.-]{3,64}$")
 CAMERA_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 U = AppUser.__table__
@@ -60,6 +61,9 @@ def resolve_role(role) -> str:
     return role
 
 
+def display_role(role: str) -> str:
+    return ROLE_DISPLAY.get(role, role)
+
 
 # ---------------------------------------------------------------- kullanıcılar
 def get_user(s: Session, *, username=None, user_id=None):
@@ -94,6 +98,18 @@ def update_user(s: Session, user_id: int, *, role=None, disabled=None, scope=...
         values["camera_scope"] = normalize_scope(scope)
     if s.execute(update(U).where(U.c.id == user_id).values(**values)).rowcount != 1:
         raise LookupError("kullanıcı yok")
+
+
+def rename_user(s: Session, user_id: int, new_username: str) -> str:
+    """Kullanıcı adını değiştirir (kimlik/id, parola ve rol aynı kalır); yeni ad benzersiz olmalı."""
+    new_username = normalize_username(new_username)
+    other = get_user(s, username=new_username)
+    if other is not None and other["id"] != user_id:
+        raise StoreError("bu kullanıcı adı zaten var")
+    if s.execute(update(U).where(U.c.id == user_id).values(username=new_username, updated_at=func.now())
+                 ).rowcount != 1:
+        raise LookupError("kullanıcı yok")
+    return new_username
 
 
 def active_admins(s: Session) -> int:

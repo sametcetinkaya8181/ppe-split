@@ -4,11 +4,11 @@ import os
 
 from alembic import command
 from sqlalchemy import create_engine, text
-from sqlalchemy.engine import make_url
 
 from tests.conftest import alembic_cfg
+from tests.db_guard import assert_safe_test_target
 
-base = make_url(os.environ["TEST_DATABASE_URL"])
+base = assert_safe_test_target(os.environ.get("TEST_DATABASE_URL", ""))   # FAZ 01: FAIL-CLOSED hedef koruması
 admin = create_engine(base.set(database="postgres"), isolation_level="AUTOCOMMIT")
 with admin.connect() as c:
     c.execute(text('DROP DATABASE IF EXISTS "ppe_lan_test" WITH (FORCE)'))

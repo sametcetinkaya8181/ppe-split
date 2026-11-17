@@ -94,6 +94,29 @@ Bu depoda uygulanan sıra (veri silinmez):
 Geri dönüş: önceki commit'in imajıyla `docker compose up -d --build`; 0004 tabloları eski sürüm tarafından yok sayılır
 (silmeye gerek yok).
 
+## Sürüm izlenebilirliği (FAZ 01)
+
+Dashboard imajı kaynak commit'e izlenebilir biçimde `scripts/build_image.py` ile oluşturulur. İmaj OCI etiketleri
+(`org.opencontainers.image.revision/created/version/ref.name`, `com.ppe.build.kind`, `com.ppe.build.tree-state`) ve
+`/app/build-info.json` taşır; admin `/api/ops/metrics` yanıtında `build` alanı olarak görür, uygulama açılışta
+doğrulanmamış imaj için `DEVELOPMENT/UNVERIFIED` uyarısı yazar.
+
+```powershell
+python scripts/build_image.py                    # ppe-dashboard-dev:<sha12>[-dirty]  (kind=development)
+python scripts/build_image.py --release 0.10.7   # ppe-dashboard:0.10.7 + ppe-dashboard:sha-<sha12>  (yalnız TEMİZ ağaç)
+docker image inspect <etiket> --format "{{json .Config.Labels}}"
+```
+
+- RELEASE kirli ağaçta, izlenmeyen dosya varken veya etiket zaten varsa **reddedilir** (release etiketleri değişmez).
+- Araç `ppe-dashboard:latest` etiketine **dokunmaz**. Çalışan yığını yeni sürüme geçirmek ayrı ve onaylı bir adımdır:
+  önce yedek (`scripts/backup.py --quiesce`) ve izole doğrulama, sonra
+  `docker tag ppe-dashboard:<sürüm> ppe-dashboard:latest; docker compose up -d migrate dashboard`.
+  Geri dönüş: önceki sürüm etiketini `latest` olarak yeniden etiketleyip aynı komut (migration geri alınmaz; şema
+  değişikliği varsa `docs/BACKUP_RESTORE.md`).
+- `docker compose build` ile oluşturulan imajlar `kind=development, tree_state=unknown` etiketini taşır (UNVERIFIED).
+- Not (2026-11-17): bugün çalışan `ppe-dashboard:latest` (6f4ac355, 2026-11-09) bu mekanizmadan önce, commit edilmemiş
+  koddan oluşturulmuştur; provenance etiketi yoktur.
+
 ## Bakım komutları
 
 ```powershell

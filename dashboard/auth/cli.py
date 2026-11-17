@@ -7,9 +7,12 @@ ile standart girdiden okunur; komut satırı argümanı olarak ALINMAZ (geçmiş
     docker compose exec dashboard python -m auth.cli list
     docker compose exec dashboard python -m auth.cli set-password admin
     docker compose exec dashboard python -m auth.cli disable kullanici | enable kullanici | revoke kullanici
+    docker compose exec dashboard python -m auth.cli rename eskiad yeniad
+    docker compose exec dashboard python -m auth.cli set-role kullanici --role user
 
-Roller: admin (hesap/rol yönetimi + model olasılıkları), user (= supervisor: tüm operasyonel ekranlar, model
-olasılıkları yok), viewer (yalnız geçmiş/istatistik, görüntüsüz). 'user' DB'de 'supervisor' olarak saklanır."""
+Roller: admin (hesap/rol yönetimi, model olasılıkları, teknik ayrıntılar ve run raporları), user (= supervisor:
+canlı izleme, uyarılar, görüntüler, ihlal geçmişi ve istatistik; model olasılıkları ve teknik ayrıntılar yok),
+viewer (yalnız geçmiş/istatistik, görüntüsüz). 'user' DB'de 'supervisor' olarak saklanır; listede 'user' görünür."""
 import argparse
 import getpass
 import sys
@@ -45,12 +48,18 @@ def main(argv=None) -> int:
     sub.add_parser("list")
     for name in ("disable", "enable", "revoke"):
         sub.add_parser(name).add_argument("username")
+    r = sub.add_parser("rename")
+    r.add_argument("username")
+    r.add_argument("new_username")
+    sr = sub.add_parser("set-role")
+    sr.add_argument("username")
+    sr.add_argument("--role", required=True, choices=store.ROLE_CHOICES)
     args = ap.parse_args(argv)
     try:
         with get_session() as s, s.begin():
             if args.cmd == "list":
                 for u in store.list_users(s):
-                    print(f"{u['id']:>4} {u['username']:<24} {u['role']:<10} "
+                    print(f"{u['id']:>4} {u['username']:<24} {store.display_role(u['role']):<10} "
                           f"{'devre dışı' if u['disabled'] else 'etkin':<10} kameralar={u['camera_scope'] or 'tümü'}")
                 return 0
             if args.cmd == "create":
@@ -68,6 +77,21 @@ def main(argv=None) -> int:
             if args.cmd == "set-password":
                 store.set_password(s, user["id"], _password(args))
                 store.audit(s, "password_reset", "success", detail={"target_user_id": user["id"], "reason": "cli"})
+            elif args.cmd == "rename":
+                new = store.rename_user(s, user["id"], args.new_username)
+                store.revoke_user_sessions(s, user["id"], "policy_changed")      # yeni adla yeniden giriş
+                store.audit(s, "user_update", "success", detail={"target_user_id": user["id"],
+                                                                 "changes": ["username"], "reason": "cli"})
+                print(f"kullanıcı adı değişti: {user['username']} -> {new}")
+            elif args.cmd == "set-role":
+                role = store.resolve_role(args.role)
+                if user["role"] == "admin" and role != "admin" and store.active_admins(s) <= 1:
+                    raise SystemExit("son etkin yöneticinin rolü düşürülemez")
+                store.update_user(s, user["id"], role=role)
+                store.revoke_user_sessions(s, user["id"], "policy_changed")      # yeni yetki yeni oturumla
+                store.audit(s, "user_update", "success", detail={"target_user_id": user["id"], "changes": ["role"],
+                                                                 "role": role, "reason": "cli"})
+                print(f"rol güncellendi: {user['username']} -> {store.display_role(role)}")
             elif args.cmd in ("disable", "enable"):
                 if args.cmd == "disable" and user["role"] == "admin" and store.active_admins(s) <= 1:
                     raise SystemExit("son etkin yönetici devre dışı bırakılamaz")

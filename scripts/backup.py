@@ -25,7 +25,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from ppe_ops import (ROOT, SNAPSHOT_NAME, OpsError, compose, db_facts, fail, sha256, write_json)  # noqa: E402
+from ppe_ops import (ROOT, SNAPSHOT_NAME, OpsError, compose, db_exec, db_facts, fail, set_target, sha256,  # noqa: E402
+                     write_json)
 
 RESTORE_MD = """# Geri yükleme (özet)
 
@@ -38,20 +39,35 @@ adımlarını izleyin. Ana veritabanının üzerine yazmak geri alınamaz; önce
 """
 
 
+def _shown(p: Path) -> str:
+    """Proje içindeyse göreli, dışındaysa (ör. şifreli/erişim kontrollü yerel klasör) mutlak yol."""
+    try:
+        return p.relative_to(ROOT).as_posix()
+    except ValueError:
+        return p.as_posix()
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--out", default="backups", help="yedek kök klasörü (varsayılan: backups)")
     ap.add_argument("--quiesce", action="store_true", help="yedek süresince dashboard servisini durdur")
+    # FAZ 01 (yalnız doğrulama): yedek aracını ana kümeye dokunmadan sınamak için işaretli geçici küme + kaynak klasör
+    ap.add_argument("--target-container", help="cluster_name=ppe-ephemeral-test işaretli geçici PostgreSQL container'ı")
+    ap.add_argument("--snapshots-dir", help="snapshot kaynak klasörü (varsayılan: data/snapshots)")
     args = ap.parse_args()
+    if args.target_container and args.quiesce:
+        fail("--quiesce yalnız ana yığında anlamlıdır; --target-container ile birlikte kullanılamaz")
 
     out_root = (ROOT / args.out).resolve()
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     dest = out_root / f"ppe-{stamp}"
-    snap_src = ROOT / "data" / "snapshots"
+    snap_src = Path(args.snapshots_dir).resolve() if args.snapshots_dir else ROOT / "data" / "snapshots"
     try:
-        compose("exec", "-T", "db", "pg_isready", "-q")
-    except OpsError:
-        fail("PostgreSQL (db servisi) hazır değil: docker compose ps")
+        if args.target_container:
+            set_target(args.target_container)           # işaretsiz container -> OpsError (FAIL-CLOSED)
+        db_exec("pg_isready", "-q")
+    except OpsError as exc:
+        fail(f"PostgreSQL hazır değil veya hedef reddedildi: {exc}")
     dest.mkdir(parents=True, exist_ok=False)
     stopped = False
     try:
@@ -60,7 +76,7 @@ def main():
             stopped = True
         before = db_facts()
         with open(dest / "db.dump", "wb") as f:
-            r = compose("exec", "-T", "db", "sh", "-c", 'pg_dump -Fc --no-password -U "$POSTGRES_USER" -d "$POSTGRES_DB"',
+            r = db_exec("sh", "-c", 'pg_dump -Fc --no-password -U "$POSTGRES_USER" -d "$POSTGRES_DB"',
                         stdout=f, text=False, check=False)
         if r.returncode != 0:
             raise OpsError("pg_dump başarısız: " + r.stderr.decode("utf-8", "replace").strip()[-300:])
@@ -82,7 +98,7 @@ def main():
             "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "quiesced": args.quiesce,
             "alembic_revision": after["alembic_revision"],
-            "postgres_version": compose("exec", "-T", "db", "postgres", "--version").stdout.strip(),
+            "postgres_version": db_exec("postgres", "--version").stdout.strip(),
             "counts": after["counts"],
             "db_changed_during_backup": before["counts"] != after["counts"],
             "counts_before_dump": before["counts"],
@@ -94,7 +110,7 @@ def main():
             "unreferenced_files": len(set(files) - set(refs)),
         }
         write_json(dest / "manifest.json", manifest)
-        (dest / "RESTORE.md").write_text(RESTORE_MD.format(name=dest.relative_to(ROOT).as_posix()), encoding="utf-8")
+        (dest / "RESTORE.md").write_text(RESTORE_MD.format(name=_shown(dest)), encoding="utf-8")
         lines = [f"{sha256(dest / n)}  {n}" for n in ("db.dump", "manifest.json", "RESTORE.md")]
         lines += [f"{h}  snapshots/{n}" for n, h in files.items()]
         (dest / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -104,7 +120,7 @@ def main():
         if stopped:
             compose("start", "dashboard", check=False)
 
-    print(f"Yedek: {dest.relative_to(ROOT)}")
+    print(f"Yedek: {_shown(dest)}")
     print(f"  revision {manifest['alembic_revision']}, sayımlar {manifest['counts']}")
     print(f"  db.dump {manifest['db_dump']['bytes']} bayt, snapshot {manifest['snapshots']['count']} dosya")
     if manifest["db_changed_during_backup"]:

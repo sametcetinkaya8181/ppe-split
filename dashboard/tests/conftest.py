@@ -19,18 +19,22 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 
 ROOT = Path(__file__).resolve().parent.parent
-TEST_URL = os.getenv("TEST_DATABASE_URL", "")
+TEST_URL = os.getenv("TEST_DATABASE_URL", "")     # kullanılmadan önce tests/db_guard.py ile doğrulanır
 APP_ROLE, MIGRATOR_ROLE = "ppe_app_test", "ppe_migrator_test"
 ROLE_PASSWORDS = {APP_ROLE: secrets.token_urlsafe(24), MIGRATOR_ROLE: secrets.token_urlsafe(24)}
 
 
 def _test_db_name() -> str:
+    """FAZ 01: DROP/CREATE DATABASE ve rol işlemlerinden ÖNCE hedef doğrulanır (tests/db_guard.py; FAIL-CLOSED).
+    Yalnız `cluster_name=ppe-ephemeral-test` ile başlatılmış, test dışı veritabanı içermeyen geçici küme kabul edilir."""
+    from tests.db_guard import UnsafeTestTarget, assert_safe_test_target
     if not TEST_URL:
-        pytest.exit("TEST_DATABASE_URL tanımlı değil (docker compose --profile test run --rm tests).", 2)
-    name = make_url(TEST_URL).database or ""
-    if not name.endswith("_test"):
-        pytest.exit(f"Güvenlik: test veritabanı adı '_test' ile bitmeli (gelen: {name!r}).", 2)
-    return name
+        pytest.exit("TEST_DATABASE_URL tanımlı değil (python tools/reliability/isolated_dashboard_tests.py).", 2)
+    try:
+        u = assert_safe_test_target(TEST_URL)
+    except UnsafeTestTarget as exc:
+        pytest.exit(f"Güvenlik (FAIL-CLOSED): test hedefi reddedildi — {exc}. Hiçbir veritabanı işlemi yapılmadı.", 2)
+    return u.database
 
 
 def alembic_cfg(url: str = TEST_URL) -> Config:
@@ -40,7 +44,13 @@ def alembic_cfg(url: str = TEST_URL) -> Config:
     return cfg
 
 
+_GUARDED: list = []
+
+
 def _admin_exec(sql: str):
+    """Süper kullanıcı komutu (DROP/CREATE DATABASE, DROP ROLE): hedef bu süreçte doğrulanmadıysa önce doğrulanır."""
+    if not _GUARDED:
+        _GUARDED.append(_test_db_name())
     eng = create_engine(make_url(TEST_URL).set(database="postgres"), isolation_level="AUTOCOMMIT")
     with eng.connect() as c:
         c.execute(text(sql))
@@ -77,7 +87,8 @@ def regrant_app(database: str | None = None):
 
 @pytest.fixture(scope="session")
 def db_url():
-    name = _test_db_name()
+    name = _test_db_name()                        # FAIL-CLOSED: güvenli değilse pytest burada durur
+    _GUARDED.append(name)
     _admin_exec(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
     _admin_exec(f'CREATE DATABASE "{name}"')
     command.upgrade(alembic_cfg(), "head")

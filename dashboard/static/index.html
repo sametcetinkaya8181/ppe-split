@@ -246,7 +246,7 @@
       <div id="peopleWrap" class="scroll"></div>
     </div>
 
-    <div class="box">
+    <div class="box" id="covBox">
       <h2>Analiz kapsamı (kamera bazlı)</h2>
       <div id="covWrap" class="scroll"><div class="empty">Dedektör sağlık özeti gelince burada görünür.</div></div>
       <p class="cov-note">Değerlendirilemeyen kişiler "Uygun" sayılmaz; sistem onlar hakkında baret/yelek kararı
@@ -254,7 +254,7 @@
         sayısı değildir; oranlar dedektör başlangıcından beridir.</p>
     </div>
 
-    <div class="box">
+    <div class="box" id="reportBox">
       <div class="head"><h2>Video özeti (kamera ve kişi bazlı)</h2><button id="loadReport">Raporu yükle</button></div>
       <div id="reportWrap" class="scroll"><div class="empty">Dedektör bir videoyu bitirince rapor oluşur.</div></div>
     </div>
@@ -288,7 +288,7 @@
       <div class="actions"><button type="submit" class="primary">Uygula</button><button type="button" id="hReset">Sıfırla</button></div>
       <span class="chip" id="hRunChip" hidden><span></span><button type="button" aria-label="Run filtresini kaldır">×</button></span>
     </form>
-    <p class="note">Her satır bir ihlaldir (başlangıç → sürüyor → bitiş olayları tek satırda). İz ID, o run içindeki takip numarasıdır; gerçek kişi kimliği değildir. Tarihler bu bilgisayarın saat dilimine göredir.</p>
+    <p class="note">Her satır bir ihlaldir (başlangıç → sürüyor → bitiş olayları tek satırda).<span id="hNoteTrack"> İz ID, o run içindeki takip numarasıdır; gerçek kişi kimliği değildir.</span> Tarihler bu bilgisayarın saat dilimine göredir.</p>
     <div class="tscroll" id="hTable"></div>
     <div class="more" id="hMore" hidden><button type="button">Daha fazla yükle</button></div>
     <div class="status-line" id="hStatus" aria-live="polite"></div>
@@ -307,7 +307,7 @@
     <div class="status-line" id="sStatus" aria-live="polite"></div>
   </div>
   <div class="tally wrap" id="sTiles"></div>
-  <p class="note" style="padding:6px 0 0">İhlal sayıları tekil ihlallerdir (başlangıç olayı olanlar); "sürüyor" tekrarları sayıyı artırmaz. Ham olay sayısı ayrıca gösterilir.</p>
+  <p class="note" style="padding:6px 0 0">İhlal sayıları tekil ihlallerdir (başlangıç olayı olanlar); "sürüyor" tekrarları sayıyı artırmaz.<span id="sNoteRaw"> Ham olay sayısı ayrıca gösterilir.</span></p>
   <div class="split">
     <div class="box">
       <h2 id="sChartTitle">Günlük ihlal sayısı</h2>
@@ -442,6 +442,7 @@ function syncCam(c) {
   t.exp.setAttribute("aria-label", `${c.name}: ${t.exp.textContent}`);
   t.state.textContent = waiting ? "Dedektör bekleniyor…"
     : m.status === "reconnecting" ? "Kamera bağlantısı yok"
+    : !TECH ? (m.status === "running" ? "Canlı izleniyor" : m.status === "finished" ? "Video bitti" : "")
     : `video ${fmtT(s.t)} · ${m.width}×${m.height} · ${m.proc_fps} kare/sn`;
   t.state.title = t.state.textContent;
   t.el.classList.toggle("alarm", s.viol > 0);
@@ -484,9 +485,10 @@ function equip(a, key) {                 // missing_* yoksa uydurulmaz: belirsiz
 }
 function alertThumb(a) {
   if (a.snapshot && SNAP_RE.test(a.snapshot)) {
+    const who = a.pid != null ? ` iz ${a.pid}` : "";       // takip no yalnız admin'e gelir
     const b = el("button", { type: "button", class: "al-thumb",
-                             "aria-label": `${a.cam_name} iz ${a.pid} ihlal görüntüsünü büyüt` });
-    const img = el("img", { alt: `${a.cam_name} iz ${a.pid} ihlal anı`, loading: "lazy" });
+                             "aria-label": `${a.cam_name}${who} ihlal görüntüsünü büyüt` });
+    const img = el("img", { alt: `${a.cam_name}${who} ihlal anı`, loading: "lazy" });
     img.src = a.snapshot;
     img.onerror = () => b.replaceWith(el("div", { class: "al-ph", text: "Görüntü yüklenemedi" }));
     b.append(img);
@@ -507,7 +509,7 @@ function alertCard(a) {
   if (!a.run_id) run.disabled = true;
   c.li.append(el("div", { class: "al-head" }, c.cam, c.time),
               el("div", { class: "al-body" }, c.thumb, el("div", null, c.kv, c.live)),
-              el("div", { class: "al-actions" }, detail, run));
+              el("div", { class: "al-actions" }, detail, TECH ? run : null));   // run raporu yalnız admin
   return c;
 }
 function fillCard(c, a) {
@@ -523,11 +525,12 @@ function fillCard(c, a) {
     ["İhlal", missing || "–"],
     ["Baret", el("span", { class: hc, text: ht })],
     ["Yelek", el("span", { class: vc, text: vt })],
-    ["Durum", closed ? `Bitti · ${a.wall} · ekipman tekrar görüldü` : "Sürüyor"],
+    ["Durum", closed ? `Bitti · ${a.wall} · ekipman tekrar görüldü` : "Sürüyor"]];
+  if (TECH) rows.push(                                 // teknik ayrıntılar yalnız admin (sunucu da göndermez)
     ["Geçici iz", `#${a.pid} (run içi takip no; kişi kimliği değildir)`],
     ["Video", f.type === "start" ? `${fmtT(f.t)}${closed ? " → " + fmtT(a.t) : ""}` : fmtT(a.t)],
     ["Incident", el("span", { text: shortId(a.incident_id), title: a.incident_id || "" })],
-    ["Run", el("span", { text: shortId(a.run_id), title: a.run_id || "" })]];
+    ["Run", el("span", { text: shortId(a.run_id), title: a.run_id || "" })]);
   if (SCORES && a.helmet_rate != null && a.vest_rate != null)
     rows.push(["Model oranı", `baret %${a.helmet_rate} · yelek %${a.vest_rate}`]);
   c.kv.replaceChildren(...rows.flatMap(([k, v]) => [el("dt", { text: k }), el("dd", null, v)]));
@@ -538,12 +541,12 @@ function addAlert(a, animate) {
     seenEvents.add(a.event_id);
     if (seenEvents.size > 4 * MAX_FEED) seenEvents.delete(seenEvents.values().next().value);
   }
-  const key = a.incident_id || `${a.cam}:${a.pid}`;
+  const key = a.incident_id || (a.pid != null ? `${a.cam}:${a.pid}` : `ev:${a.event_id || a.id}`);
   let c = openAlerts.get(key);
   if (a.type === "ongoing") {
     if (!c) return;                                    // kartı olmayan (temizlenmiş) incident için yeni kart açılmaz
     fillCard(c, a);
-    c.live.hidden = false; c.live.textContent = `Son bildirim: ${a.wall} · video ${fmtT(a.t)}`;
+    c.live.hidden = false; c.live.textContent = `Son bildirim: ${a.wall}` + (a.t != null ? ` · video ${fmtT(a.t)}` : "");
     return;
   }
   if (!c) {
@@ -804,12 +807,12 @@ function incidentRow(i) {
   const btn = el("button", { type: "button", text: "Detay" });
   btn.onclick = () => showIncident(i.incident_id);
   return el("tr", null,
-    el("td", { text: fmtDT(i.started_at) }), camCell(i), el("td", { text: `#${i.track_id}` }),
+    el("td", { text: fmtDT(i.started_at) }), camCell(i), TECH ? el("td", { text: `#${i.track_id}` }) : null,
     el("td", { text: i.missing || "–" }), statusCell(i.status, i.status_reason),
     el("td", { text: i.status === "active" ? "sürüyor" : fmtDur(i.duration_sec) }),
-    el("td", { class: "num", text: fmtN(i.event_count) }),
+    TECH ? el("td", { class: "num", text: fmtN(i.event_count) }) : null,
     el("td", null, i.snapshot_restricted ? el("span", { class: "why", text: "yetki gerekli" })
-      : thumbOf(i.snapshot, `${i.camera_id} iz ${i.track_id} ihlal anı`)), el("td", null, btn));
+      : thumbOf(i.snapshot, `${i.camera_id}${TECH ? ` iz ${i.track_id}` : ""} ihlal anı`)), el("td", null, btn));
 }
 async function loadHistory(append) {
   if (H.busy) return;
@@ -821,8 +824,8 @@ async function loadHistory(append) {
       equipment: f.equipment.value, status: f.status.value, run_id: H.run, limit: 50, cursor: append ? H.cursor : null });
     let body = append ? $("hTable").querySelector("tbody") : null;
     if (!body) {
-      const t = table(["Başlangıç", "Kamera", "İz ID", "Eksik ekipman", "Durum", "Süre", { text: "Olay", class: "num" },
-                       "Görüntü", ""], []);
+      const t = table(["Başlangıç", "Kamera", ...(TECH ? ["İz ID"] : []), "Eksik ekipman", "Durum", "Süre",
+                       ...(TECH ? [{ text: "Olay", class: "num" }] : []), "Görüntü", ""], []);
       $("hTable").replaceChildren(d.total ? t : "");
       body = t.tBodies[0];
     }
@@ -851,25 +854,26 @@ async function showIncident(id) {
       ["Kamera kimliği", d.camera.id + (d.camera.current_name && d.camera.current_name !== d.camera.name
         ? ` · bugünkü adı: ${d.camera.current_name}` : "")],
       d.source_ref ? ["Kaynak", `${d.source_ref}${d.source_kind ? ` (${d.source_kind})` : ""}`] : null,
-      ["İz ID", `#${d.track_id} (bu run içindeki takip numarası; kişi kimliği değildir)`],
+      TECH ? ["İz ID", `#${d.track_id} (bu run içindeki takip numarası; kişi kimliği değildir)`] : null,
       ["Eksik ekipman", d.missing || "–"],
       d.missing_at_start && d.missing_at_start !== d.missing ? ["Başlangıçta eksik", d.missing_at_start] : null,
       ["Durum", el("span", null, pill(d.status, STATUS[d.status] || d.status), " ", REASON[d.status_reason] || "")],
       ["Başlangıç", fmtDT(d.started_at)],
       ["Bitiş", d.ended_at ? fmtDT(d.ended_at) : "Bitiş olayı yok"],
       ["Süre", fmtDur(d.duration_sec)],
-      ["Video zamanı", video],
-      d.unclosed ? ["Run raporunda", `${REASON[d.unclosed.reason] || d.unclosed.reason}` +
+      // Teknik ayrıntılar yalnız admin (TECH); sunucu diğer rollere bu alanları hiç göndermez.
+      TECH ? ["Video zamanı", video] : null,
+      TECH && d.unclosed ? ["Run raporunda", `${REASON[d.unclosed.reason] || d.unclosed.reason}` +
                     (d.unclosed.video_time_sec != null ? ` · video ${d.unclosed.video_time_sec} sn` : "")] : null,
-      ["Run", `${RUN_STATUS[d.run.status] || d.run.status} · döngü ${d.run.loop_no ?? "–"} · ${fmtDT(d.run.started_at)}`],
-      ["Olay kaydı", `${fmtN(d.event_count)} (sürüyor bildirimi: ${fmtN(d.ongoing_count)})`]]);
+      TECH && d.run ? ["Run", `${RUN_STATUS[d.run.status] || d.run.status} · döngü ${d.run.loop_no ?? "–"} · ${fmtDT(d.run.started_at)}`] : null,
+      TECH ? ["Olay kaydı", `${fmtN(d.event_count)} (sürüyor bildirimi: ${fmtN(d.ongoing_count)})`] : null]);
     const rows = d.timeline.map(e => el("tr", null,
       el("td", { text: fmtDT(e.occurred_at) }), el("td", { text: EVENT_TYPE[e.type] || e.type }),
-      el("td", { class: "num", text: e.video_time_sec ?? "–" }), el("td", { text: e.missing || "–" }),
+      TECH ? el("td", { class: "num", text: e.video_time_sec ?? "–" }) : null, el("td", { text: e.missing || "–" }),
       SCORES ? [el("td", { class: "num", text: e.helmet_rate ?? "–" }), el("td", { class: "num", text: e.vest_rate ?? "–" })] : null));
     openDetail("İhlal detayı", el("div", { class: "detail-top" }, pic, info),
       el("h2", { text: "Olay zaman çizelgesi", style: "padding-left:0" }),
-      el("div", { class: "tscroll" }, table(["Zaman", "Olay", { text: "Video sn", class: "num" }, "Eksik",
+      el("div", { class: "tscroll" }, table(["Zaman", "Olay", ...(TECH ? [{ text: "Video sn", class: "num" }] : []), "Eksik",
         ...(SCORES ? [{ text: "Baret (model %)", class: "num" }, { text: "Yelek (model %)", class: "num" }] : [])], rows)),
       d.timeline_truncated ? el("p", { class: "why", text: "Zaman çizelgesi kısaltıldı (ilk olaylar gösteriliyor)." }) : null);
   } catch (e) { if (current()) openDetail("İhlal detayı", el("p", { class: "status-line err", text: e.message })); }
@@ -929,7 +933,7 @@ function renderStats(d) {
   const inc = d.incidents, st = d.by_status;
   const tiles = [["Doğrulanmış ihlal", inc.verified, "v"], ["Baret eksik", inc.helmet], ["Yelek eksik", inc.vest],
                  ["İkisi birden", inc.both], ["Şu an süren", st.active, "v"], ["Belirsiz / başlangıçsız", st.unknown + st.orphan, "w"],
-                 ["Kapanan", st.closed, "o"], ["Ham olay kaydı", d.events.total]];
+                 ["Kapanan", st.closed, "o"], ...(TECH && d.events ? [["Ham olay kaydı", d.events.total]] : [])];
   $("sTiles").replaceChildren(...tiles.map(([label, n, cls]) =>
     el("div", { class: cls || null }, el("b", { text: fmtN(n) }), el("span", { text: label }))));
   drawChart(d.daily);
@@ -938,13 +942,13 @@ function renderStats(d) {
     el("td", { class: "num", text: x.verified }), el("td", { class: "num", text: x.helmet }), el("td", { class: "num", text: x.vest })))));
   const maxCam = Math.max(1, ...d.by_camera.map(c => c.verified));
   $("sCams").replaceChildren(d.by_camera.length ? table(["Kamera", "", { text: "İhlal", class: "num" },
-      { text: "Baret", class: "num" }, { text: "Yelek", class: "num" }, { text: "Olay", class: "num" }],
+      { text: "Baret", class: "num" }, { text: "Yelek", class: "num" }, ...(TECH ? [{ text: "Olay", class: "num" }] : [])],
     d.by_camera.map(c => el("tr", null, el("td", null, c.camera_id,
         el("span", { class: "why", text: c.camera_name && c.camera_name !== c.camera_id ? `bugünkü adı: ${c.camera_name}` : "" })),
       el("td", { class: "hbar-cell" }, el("div", { class: "hbar", style: `width:${(c.verified / maxCam * 100).toFixed(1)}%`,
                                                    title: `${c.verified} ihlal` })),
       el("td", { class: "num", text: fmtN(c.verified) }), el("td", { class: "num", text: fmtN(c.helmet) }),
-      el("td", { class: "num", text: fmtN(c.vest) }), el("td", { class: "num", text: fmtN(c.events) }))))
+      el("td", { class: "num", text: fmtN(c.vest) }), TECH ? el("td", { class: "num", text: fmtN(c.events) }) : null)))
     : el("div", { class: "empty", text: "Kayıt yok." }));
   $("sStatusTbl").replaceChildren(table(["Durum", "Anlamı", { text: "Adet", class: "num" }],
     Object.keys(STATUS).map(k => el("tr", null, el("td", null, pill(k, STATUS[k])),
@@ -1082,7 +1086,7 @@ async function refreshView(v) {
 }
 function showView(v, user) {
   if (!ME) return;
-  if (!VIEWS.includes(v) || (v === "live" && !LIVE_OK)) v = LIVE_OK ? "live" : "stats";
+  if (!VIEWS.includes(v) || (v === "live" && !LIVE_OK) || (v === "runs" && !TECH)) v = LIVE_OK ? "live" : "stats";
   VIEWS.forEach(x => { $("view-" + x).hidden = x !== v; $("tab-" + x).setAttribute("aria-selected", String(x === v)); });
   if (user) window.history.replaceState(null, "", v === "live" ? location.pathname : "#" + v);
   if (v !== "live") refreshView(v);
@@ -1109,7 +1113,8 @@ window.addEventListener("resize", () => {
 let ME = null, CSRF = null, LIVE_OK = false, liveTimer = null;
 // SCORES: model oranı yetkisi (yalnız admin; sunucu /api/auth/me'den). SESSION: oturum kuşağı — çıkış/giriş sonrası
 // önceki oturumdan gecikmeli gelen yanıt (ör. admin verisi) yeni kullanıcının ekranına yazılmaz.
-let SCORES = false, SESSION = 0;
+// TECH: teknik ayrıntı yetkisi (yalnız admin): run raporları, iz no, video saniyesi, ham olay sayıları, analiz kapsamı.
+let SCORES = false, TECH = false, SESSION = 0;
 const ROLE_TR = { admin: "Yönetici", supervisor: "Kullanıcı", viewer: "İzleyici" };   // supervisor = "user" rolü
 function clearUserData() {         // önceki kullanıcının verisi (görüntüler dahil) gizli DOM'da kalmasın
   for (const id of ["hTable", "rTable", "rCams", "sTiles", "sChart", "sCams", "sStatusTbl", "sDailyTable",
@@ -1127,7 +1132,7 @@ function clearUserData() {         // önceki kullanıcının verisi (görüntü
   $("dlgImg").removeAttribute("src");
 }
 function showLogin(msg, isError = true) {
-  ME = null; CSRF = null; LIVE_OK = false; SCORES = false; SESSION++;
+  ME = null; CSRF = null; LIVE_OK = false; SCORES = false; TECH = false; SESSION++;
   if (liveTimer) { clearInterval(liveTimer); liveTimer = null; }
   if (WS) { const w = WS; WS = null; w.close(); }
   if ($("detail").open) $("detail").close();
@@ -1140,10 +1145,13 @@ function showLogin(msg, isError = true) {
   $("loginForm").elements.username.focus();
 }
 function startApp(me) {
-  ME = me.user; CSRF = me.csrf_token; LIVE_OK = !!me.permissions.live; SCORES = !!me.permissions.model_scores; SESSION++;
+  ME = me.user; CSRF = me.csrf_token; LIVE_OK = !!me.permissions.live; SCORES = !!me.permissions.model_scores;
+  TECH = !!me.permissions.technical; SESSION++;
   $("loginView").hidden = true; $("appTabs").hidden = false; $("userBox").hidden = false;
   $("userName").textContent = `${ME.username} · ${ROLE_TR[ME.role] || ME.role}`;
   $("tab-live").hidden = !LIVE_OK;
+  $("tab-runs").hidden = !TECH;
+  for (const id of ["covBox", "reportBox", "hNoteTrack", "sNoteRaw"]) $(id).hidden = !TECH;
   if (!LIVE_OK) { $("conn").className = ""; $("connText").textContent = "Canlı izleme yetkisi yok"; }
   statsDefaultRange();
   showView(location.hash.slice(1), false);

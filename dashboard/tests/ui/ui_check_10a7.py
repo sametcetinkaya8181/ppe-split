@@ -236,11 +236,13 @@ def key(b, k, code, vk):
 
 CARDS_JS = """return [...document.querySelectorAll("#feed li")].map(li => ({
   cam: li.querySelector(".al-cam").textContent, closed: li.classList.contains("closed"),
-  inc: li.querySelector("dl.al-kv dd span[title]")?.title, img: li.querySelector(".al-thumb img")?.getAttribute("src"),
+  inc: [...openAlerts].find(([, c]) => c.li === li)?.[0], img: li.querySelector(".al-thumb img")?.getAttribute("src"),
   ph: li.querySelector(".al-ph")?.textContent || null, text: li.textContent }));"""
 
 
 def alert_checks(b):
+    """FAZ 01: teknik kart alanları (iz, incident, run) ve run raporu düğmesi yalnız admin'dedir (FAZ 10-A.7 rol
+    görünürlüğü); bu kontroller admin oturumunda çalışır. Admin olmayan görünüm: alert_checks_user."""
     b.viewport(1280)
     b.go(BASE + "/")
     b.wait('document.querySelectorAll("#feed li").length >= 3')
@@ -292,7 +294,7 @@ def alert_checks(b):
     a_inc = by_cam["Giriş kapısı"]["inc"]
     run_id = [a for a in alerts if a["incident_id"] == a_inc][0]["run_id"]
     b.ev("window.__fetch.length = 0; return true;")
-    b.ev(f"""const li = [...document.querySelectorAll("#feed li")].find(li => li.textContent.includes({json.dumps(a_inc[:8])}));
+    b.ev(f"""const li = openAlerts.get({json.dumps(a_inc)}).li;
              const btn = [...li.querySelectorAll("button")].find(x => x.textContent.startsWith("Run raporu"));
              btn.click(); btn.click(); return true;""")
     b.wait('document.getElementById("detail").open && document.getElementById("detailTitle").textContent === "Run raporu"'
@@ -316,7 +318,7 @@ def alert_checks(b):
     check("run raporu: Escape ile kapanıyor", b.ev('return !document.getElementById("detail").open;'))
 
     b_inc = long["inc"]
-    b.ev(f"""const li = [...document.querySelectorAll("#feed li")].find(li => li.textContent.includes({json.dumps(b_inc[:8])}));
+    b.ev(f"""const li = openAlerts.get({json.dumps(b_inc)}).li;
              [...li.querySelectorAll("button")].find(x => x.textContent === "İhlal detayı").click(); return true;""")
     b.wait('document.getElementById("detailTitle").textContent === "İhlal detayı" && '
            'document.querySelector("#detailBody .detail-top img")')
@@ -332,6 +334,42 @@ def alert_checks(b):
     time.sleep(0.4)
     check("uyarı kartları 390px: yatay taşma yok", no_hscroll(b))
     b.shot("alerts_390")
+
+
+def alert_checks_user(b):
+    """FAZ 10-A.7 (WIP) + FAZ 01: user (supervisor) uyarı kartı operasyonel alanları gösterir; teknik alanlar ve run raporu
+    düğmesi yoktur (sunucu da göndermez). İhlal detayı ve fotoğraf çalışmaya devam eder."""
+    b.viewport(1280)
+    b.go(BASE + "/")
+    b.wait('document.querySelectorAll("#feed li").length >= 3')
+    time.sleep(1.0)
+    alerts = b.ev('return await (await fetch("/api/alerts")).json();')
+    cards = b.ev(CARDS_JS)
+    starts = {a["incident_id"]: a.get("snapshot") for a in alerts if a["type"] == "start"}
+    check("user uyarı: incident başına tek kart", len(cards) == len({a["incident_id"] for a in alerts}),
+          (len(cards), len(alerts)))
+    check("user uyarı: her kartın fotoğrafı kendi incident'ının başlangıç snapshot'ı",
+          all(c["img"] == starts.get(c["inc"]) for c in cards if c["img"]) and any(c["img"] for c in cards))
+    g = {c["cam"]: c for c in cards}["Giriş kapısı"]
+    check("user uyarı: operasyonel alanlar var (ihlal, baret, yelek, durum)",
+          all(k in g["text"] for k in ("İhlal", "Baret", "Yelek", "Sürüyor")), g["text"][:200])
+    check("user uyarı: teknik alanlar yok (geçici iz, video, incident, run)",
+          not any(k in g["text"] for k in ("Geçici iz", "Video", "Incident", "Run")), g["text"][:200])
+    btns = b.ev('return [...document.querySelectorAll("#feed li button")].map(x => x.textContent);')
+    check("user uyarı: run raporu düğmesi yok, ihlal detayı var",
+          not any(t.startswith("Run raporu") for t in btns) and "İhlal detayı" in btns, sorted(set(btns)))
+    check("user uyarı: API takip no / run kimliği göndermiyor", not any(k in alerts[0] for k in ("pid", "run_id", "t", "box")),
+          sorted(alerts[0]))
+    inc = g["inc"]
+    b.ev(f"""[...openAlerts.get({json.dumps(inc)}).li.querySelectorAll("button")].find(x => x.textContent === "İhlal detayı").click();
+             return true;""")
+    b.wait('document.getElementById("detailTitle").textContent === "İhlal detayı" && '
+           '!document.getElementById("detailBody").textContent.includes("Yükleniyor")')
+    body = b.ev('return document.getElementById("detailBody").textContent;')
+    check("user ihlal detayı: açılıyor, teknik satırlar (İz ID, Video zamanı, Olay kaydı, Run) yok",
+          not any(k in body for k in ("İz ID", "Video zamanı", "Olay kaydı", "Run raporunda")), body[:200])
+    key(b, "Escape", "Escape", 27)
+    time.sleep(0.3)
 
 
 SCAN_JS = r"""
@@ -379,8 +417,11 @@ def role_user_checks(b):
           me["permissions"]["model_scores"] is False and me["permissions"]["live"] and me["permissions"]["snapshots"])
     s = b.ev(SCAN_JS)
     check("user: hiçbir API yanıtında olasılık/oran alanı yok (JSON içeriği)", s["found"] == [], s["found"][:10])
-    check("user: taranan veri gerçekten var (boş yanıtla geçmiyor)", s["persons"] > 0 and s["rows"] > 0
-          and s["people"] > 0 and s["timeline"] > 0, {k: s[k] for k in ("persons", "rows", "people", "timeline")})
+    check("user: taranan veri gerçekten var (boş yanıtla geçmiyor)", s["people"] > 0 and s["timeline"] > 0,
+          {k: s[k] for k in ("people", "timeline")})
+    check("user: run raporları ve video özeti (teknik) kişi satırı içermiyor (403)", s["persons"] == 0 and s["rows"] == 0,
+          {k: s[k] for k in ("persons", "rows")})
+    check("user: technical yetkisi yok", me["permissions"].get("technical") is False, me["permissions"])
     snap = b.ev("""const a = (await (await fetch("/api/alerts")).json()).find(x => x.snapshot);
                    const r = await fetch(a.snapshot); return [r.status, r.headers.get("content-type")];""")
     check("user: snapshot görüntüleme izinli (kapsam içinde)", snap == [200, "image/jpeg"], snap)
@@ -399,20 +440,16 @@ def role_user_checks(b):
     dom = b.ev("""return [document.body.innerText.includes("Model oranı"), document.body.innerText.includes("model %"),
                           document.body.innerText.includes("%12"), document.body.innerText.includes("%78")];""")
     check("user: arayüzde model oranı yok (uyarı kartı, kişi tablosu)", dom == [False, False, False, False], dom)
-    b.ev('document.getElementById("loadReport").click(); return true;')
-    b.wait('document.querySelector("#reportWrap table")')
-    hdr = b.ev('return [...document.querySelectorAll("#reportWrap th")].map(x => x.textContent);')
-    check("user: video özeti tablosu oran sütunu olmadan çalışıyor", not any("%" in h for h in hdr) and "Sonuç" in hdr, hdr)
+    hidden = b.ev("""return [document.getElementById("reportBox").hidden, document.getElementById("tab-runs").hidden,
+                             document.getElementById("covBox").hidden];""")
+    check("user: video özeti, run sekmesi ve analiz kapsamı (teknik) arayüzde gizli", hidden == [True, True, True], hidden)
     b.ev('location.hash = "#runs"; return true;')
-    b.wait('document.querySelector("#rTable tbody tr")')
-    b.ev("""const row = [...document.querySelectorAll("#rTable tbody tr")].find(r => r.textContent.includes("Depo") && r.textContent.includes("Bitti"));
-            row.querySelector("button").click(); return true;""")
-    b.wait('document.getElementById("detail").open && document.querySelector("#detailBody table")')
-    hdr = b.ev('return [...document.querySelectorAll("#detailBody th")].map(x => x.textContent);')
-    check("user: run geçmişi → detay → run raporu çalışıyor, oran sütunu yok",
-          "Gözlem" in hdr and "Sonuç" in hdr and not any("%" in h for h in hdr), hdr)
-    b.shot("user_run_report")
-    key(b, "Escape", "Escape", 27)
+    time.sleep(0.5)
+    check("user: #runs adresi run ekranını açmaz", b.ev('return document.getElementById("view-runs").hidden;'))
+    codes = b.ev("""const r = await fetch("/api/history/runs"), d = await fetch("/api/report");
+                    return [r.status, d.status];""")
+    check("user: run geçmişi ve video özeti API'leri reddedilir", codes == [403, 403], codes)
+    b.shot("user_live_no_technical")
     for view in ("history", "stats"):
         b.ev(f'location.hash = "#{view}"; return true;')
         b.wait(f'!document.getElementById("view-{view}").hidden && '
@@ -444,6 +481,21 @@ def role_admin_checks(b):
     b.wait('document.getElementById("detail").open && !document.getElementById("detailBody").textContent.includes("Yükleniyor")')
     check("admin: detay önbelleği dolu (oturum değişimi testi için)", b.ev("return DETAIL_CACHE.size;") >= 1)
     key(b, "Escape", "Escape", 27)
+    time.sleep(0.3)
+    b.ev('document.getElementById("loadReport").click(); return true;')
+    b.wait('document.querySelector("#reportWrap table")')
+    hdr = b.ev('return [...document.querySelectorAll("#reportWrap th")].map(x => x.textContent);')
+    check("admin: video özeti tablosu çalışıyor", "Sonuç" in hdr, hdr)
+    b.ev('location.hash = "#runs"; return true;')
+    b.wait('document.querySelector("#rTable tbody tr")')
+    b.ev("""const row = [...document.querySelectorAll("#rTable tbody tr")].find(r => r.textContent.includes("Depo") && r.textContent.includes("Bitti"));
+            row.querySelector("button").click(); return true;""")
+    b.wait('document.getElementById("detail").open && document.querySelector("#detailBody table")')
+    hdr = b.ev('return [...document.querySelectorAll("#detailBody th")].map(x => x.textContent);')
+    check("admin: run geçmişi → detay → run raporu çalışıyor", "Gözlem" in hdr and "Sonuç" in hdr, hdr)
+    b.shot("admin_run_report")
+    key(b, "Escape", "Escape", 27)
+    b.ev('location.hash = ""; return true;')
 
 
 def session_switch_checks(b):
@@ -483,9 +535,10 @@ def main():
         login(b, "ui_user")
         header_checks(b)
         layout_checks(b)
-        alert_checks(b)
+        alert_checks_user(b)
         role_user_checks(b)
         role_admin_checks(b)
+        alert_checks(b)                  # admin oturumu: teknik kart alanları ve run raporu
         session_switch_checks(b)
         viewer_checks(b)
         for extra in sys.argv[2:]:

@@ -61,7 +61,8 @@ def main():
     ap.add_argument("--incidents", type=int, default=30000)
     ap.add_argument("--keep", action="store_true")
     args = ap.parse_args()
-    base = make_url(os.environ["TEST_DATABASE_URL"])
+    from tests.db_guard import assert_safe_test_target
+    base = assert_safe_test_target(os.environ.get("TEST_DATABASE_URL", ""))   # FAZ 01: FAIL-CLOSED hedef koruması
     admin = create_engine(base.set(database="postgres"), isolation_level="AUTOCOMMIT")
     url = base.set(database=DB).render_as_string(hide_password=False)
     with admin.connect() as c:

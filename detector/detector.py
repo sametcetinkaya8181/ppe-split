@@ -7,17 +7,12 @@ from pathlib import Path
 
 
 def _load_env():
-    """detector/.env varsa oku (terminalde verilen değişkenler önceliklidir)."""
-    p = Path(__file__).with_name(".env")
-    if p.exists():
-        for line in p.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, v = line.split("=", 1)
-                v = v.strip()
-                if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
-                    v = v[1:-1]                      # "değer" veya 'değer' -> değer
-                os.environ.setdefault(k.strip(), v)
+    """detector/.env varsa oku (terminalde verilen değişkenler önceliklidir). FAZ 01: dosya seçimi detector_env.env_file()
+    ile tek yerden yapılır; DETECTOR_ENV_FILE verilmediğinde davranış öncekiyle aynıdır (detector/.env).
+    Testler DETECTOR_ENV_FILE=none verir: üretim token'ı, kamera adresleri vb. test sürecine yüklenmez."""
+    import detector_env                          # torch/cv2 içermez; ayrıştırma kuralları aynı ("değer" -> değer)
+    for k, v in detector_env.read_env_file().items():
+        os.environ.setdefault(k, v)
 
 
 _load_env()

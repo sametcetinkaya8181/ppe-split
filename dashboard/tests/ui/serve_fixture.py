@@ -17,11 +17,12 @@ from datetime import datetime, timedelta, timezone
 
 from alembic import command
 from sqlalchemy import create_engine, text
-from sqlalchemy.engine import make_url
 
 from tests.conftest import alembic_cfg
+from tests.db_guard import assert_safe_test_target
 
-BASE = make_url(os.environ["TEST_DATABASE_URL"])
+# FAZ 01: DROP/CREATE DATABASE öncesi FAIL-CLOSED hedef koruması (serve_live_fixture da bu modülü kullanır)
+BASE = assert_safe_test_target(os.environ.get("TEST_DATABASE_URL", ""))
 XSS = '<img src=x onerror="window.__xss=1">'
 
 

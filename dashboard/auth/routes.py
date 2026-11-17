@@ -153,7 +153,7 @@ def me(ctx: AuthCtx = Depends(require("viewer"))):
     return {"user": _user_out(ctx), "csrf_token": ctx.csrf, "profile": security.PROFILE,
             "permissions": {"live": ctx.at_least("supervisor"), "snapshots": ctx.at_least("supervisor"),
                             "review": ctx.at_least("supervisor"), "admin": ctx.at_least("admin"),
-                            "model_scores": ctx.model_scores}}
+                            "model_scores": ctx.model_scores, "technical": ctx.technical}}
 
 
 class PasswordChangeIn(BaseModel):

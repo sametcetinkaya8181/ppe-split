@@ -12,7 +12,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from ppe_ops import ROOT, OpsError, compose, db_facts, fail, main_db_name, psql, sha256  # noqa: E402
+from ppe_ops import (ROOT, OpsError, compare_counts, db_exec, db_facts, fail, main_db_name, psql,  # noqa: E402
+                     set_target, sha256)
 
 VERIFY_DB = "ppe_restore_verify"
 
@@ -21,7 +22,16 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("backup", help="yedek klasörü (backups/ppe-...)")
     ap.add_argument("--keep", action="store_true", help=f"doğrulamadan sonra {VERIFY_DB} veritabanını silme")
+    # FAZ 01: geri yüklemeyi ana kümede DEĞİL, işaretli geçici kümede yap (önerilen). Bu durumda ana veritabanına hiç
+    # bağlanılmaz; "ana DB değişmedi" denetimi gereksizdir ve SKIP yazılır.
+    ap.add_argument("--target-container", help="cluster_name=ppe-ephemeral-test işaretli geçici PostgreSQL container'ı")
     args = ap.parse_args()
+    isolated = bool(args.target_container)
+    if isolated:
+        try:
+            set_target(args.target_container)
+        except OpsError as exc:
+            fail(f"hedef reddedildi: {exc}")
     src = (ROOT / args.backup).resolve() if not Path(args.backup).is_absolute() else Path(args.backup)
     if not (src / "manifest.json").is_file():
         fail(f"manifest.json bulunamadı: {src}")
@@ -45,12 +55,12 @@ def main():
     main_db = main_db_name()
     if main_db == VERIFY_DB:
         fail("güvenlik: ana veritabanı adı doğrulama veritabanıyla aynı")
-    main_before = db_facts()
+    main_before = None if isolated else db_facts()
     try:
         psql(f'DROP DATABASE IF EXISTS "{VERIFY_DB}" WITH (FORCE)', "postgres")
         psql(f'CREATE DATABASE "{VERIFY_DB}"', "postgres")
         with open(src / "db.dump", "rb") as f:
-            r = compose("exec", "-T", "db", "sh", "-c",
+            r = db_exec("sh", "-c",
                         f'pg_restore --no-owner --no-privileges --exit-on-error -U "$POSTGRES_USER" -d {VERIFY_DB}',
                         stdin=f, text=False, check=False)
         check("pg_restore", r.returncode == 0, r.stderr.decode("utf-8", "replace").strip()[-300:])
@@ -60,7 +70,9 @@ def main():
         if manifest.get("db_changed_during_backup"):
             checks.append(("SKIP", "tablo sayımları", "yedek sırasında DB değişmişti (quiesce yok)"))
         else:
-            check("tablo sayımları", restored["counts"] == manifest["counts"], json.dumps(restored["counts"]))
+            same, diff, extra = compare_counts(manifest["counts"], restored["counts"])
+            check("tablo sayımları", same, json.dumps(restored["counts"]) + (f"; farklı: {diff}" if diff else "")
+                  + (f"; manifestte olmayan (bilgi): {extra}" if extra else ""))
         refs = [x.split("/", 1)[1] for x in restored["snapshot_refs"]]
         snaps = manifest["snapshots"]["sha256"]
         missing = [n for n in refs if n not in snaps and n not in manifest["missing_referenced"]]
@@ -76,8 +88,14 @@ def main():
                 psql(f'DROP DATABASE IF EXISTS "{VERIFY_DB}" WITH (FORCE)', "postgres")
             except OpsError:
                 pass
-    main_after = db_facts()
-    if main_before == main_after:
+    if isolated:
+        checks.append(("SKIP", "ana veritabanı değişmedi", "izole hedef: ana kümeye hiç bağlanılmadı"))
+        main_after = main_before = None
+    else:
+        main_after = db_facts()
+    if isolated:
+        pass
+    elif main_before == main_after:
         check("ana veritabanı değişmedi (sayım/revision/snapshot ref)", True)
     else:                                    # geri yükleme yalnızca VERIFY_DB'ye yazar; fark canlı ingest'tir
         checks.append(("UYARI", "ana veritabanı doğrulama sırasında değişti", "canlı ingest çalışıyor olabilir"))

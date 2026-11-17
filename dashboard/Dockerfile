@@ -14,6 +14,24 @@ COPY ingest ./ingest
 COPY maintenance ./maintenance
 COPY app.py observability.py ./
 COPY static ./static
+# FAZ 01 build provenance. Değerleri scripts/build_image.py doldurur; doğrudan `docker build` / `docker compose build`
+# varsayılanları kullanır: kind=development, tree_state=unknown -> imaj DEVELOPMENT/UNVERIFIED olarak görünür.
+# ARG'lar en sonda: bağımlılık katmanlarının önbelleği bozulmaz.
+ARG PPE_GIT_SHA=unknown
+ARG PPE_GIT_BRANCH=unknown
+ARG PPE_BUILD_TIME=unknown
+ARG PPE_TREE_STATE=unknown
+ARG PPE_VERSION=0.0.0-unversioned
+ARG PPE_BUILD_KIND=development
+LABEL org.opencontainers.image.title="ppe-dashboard" \
+      org.opencontainers.image.revision="${PPE_GIT_SHA}" \
+      org.opencontainers.image.ref.name="${PPE_GIT_BRANCH}" \
+      org.opencontainers.image.created="${PPE_BUILD_TIME}" \
+      org.opencontainers.image.version="${PPE_VERSION}" \
+      com.ppe.build.tree-state="${PPE_TREE_STATE}" \
+      com.ppe.build.kind="${PPE_BUILD_KIND}"
+RUN python -c "import json, sys; json.dump(dict(zip(('revision', 'branch', 'created', 'tree_state', 'version', 'kind'), sys.argv[1:])), open('/app/build-info.json', 'w'))" \
+    "${PPE_GIT_SHA}" "${PPE_GIT_BRANCH}" "${PPE_BUILD_TIME}" "${PPE_TREE_STATE}" "${PPE_VERSION}" "${PPE_BUILD_KIND}"
 # Uygulama kodu root'a ait ve salt okunur; süreç ayrıcalıksız kullanıcıyla çalışır (yazma yalnız /data ve /tmp).
 USER 10001:10001
 EXPOSE 8000

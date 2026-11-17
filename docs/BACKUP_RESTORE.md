@@ -39,6 +39,26 @@ sonra aynı kaldığını kontrol eder; doğrulama DB'sini siler (`--keep` ile k
 
 FAZ 5'te gerçek veriyle iki kez PASS: 0002'de (12 olay) ve 0003'te (75 olay, 36 snapshot referansı).
 
+**FAZ 01 — ana kümeye hiç dokunmadan doğrulama (önerilen):** yukarıdaki komut doğrulama veritabanını ana PostgreSQL
+kümesinde oluşturur. `--target-container` ile geri yükleme, `cluster_name=ppe-ephemeral-test` işaretli geçici bir
+container'da yapılır (işaretsiz hedef reddedilir); ana veritabanına hiç bağlanılmaz:
+
+```powershell
+docker network create --internal ppe-verify-net
+docker run -d --name ppe-verify --network ppe-verify-net --tmpfs /var/lib/postgresql/data `
+  -e POSTGRES_USER=verify -e POSTGRES_PASSWORD=<rastgele> -e POSTGRES_DB=postgres `
+  postgres:17@sha256:b8faeff7712663c2773a190181e1246e37e364b887611c04658c28b44e2408fe postgres -c cluster_name=ppe-ephemeral-test
+python scripts/restore_check.py backups/ppe-<UTC> --target-container ppe-verify
+docker rm -f ppe-verify; docker network rm ppe-verify-net
+```
+
+Tablo sayımları: çekirdek 5 tablo her zaman; `app_users`, `user_sessions`, `audit_log` (0004+) ve
+`incident_reviews`, `incident_review_history` (0007+) yalnız veritabanında VARSA sayılır ve manifest'e yazılır. Eski
+manifest'lerde bulunmayan tablolar karşılaştırılmaz, bilgi olarak raporlanır (0006 sistemlerle uyumlu).
+FAZ 01 sonuçları (2026-11-17, izole): `ppe-20261101T213616Z` (0005) PASS, `ppe-20261102T030016Z` (0006) PASS;
+0005→0006→0007→0006→0007 geçişinde tüm sayımlar ve `incidents`/`violation_events` satır özetleri değişmedi;
+0007'de inceleme kaydıyla yedek→geri yükleme PASS; inceleme verisi varken downgrade reddedildi.
+
 ## Ana veritabanına geri yükleme (felaket) — elle, test edilmedi
 
 > Bu prosedür FAZ 5'te **çalıştırılmadı** (yalnız izole doğrulama test edildi). Önce yeni bir yedek alın; eski

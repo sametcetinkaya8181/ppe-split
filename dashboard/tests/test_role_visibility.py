@@ -80,7 +80,7 @@ def test_user_role_alias_is_stored_as_supervisor(api):
     body = c.get("/api/auth/me").json()
     assert body["user"]["role"] == "supervisor"
     assert body["permissions"] == {"live": True, "snapshots": True, "review": True, "admin": False,
-                                   "model_scores": False}
+                                   "model_scores": False, "technical": False}
 
 
 def test_cli_creates_user_role_without_password_argument(api, monkeypatch, capsys):
@@ -133,12 +133,12 @@ def test_user_and_viewer_receive_no_model_scores_anywhere(api):
         c = client_as(role)
         body = responses(c, s)
         assert score_keys(body) == [], (role, score_keys(body))
-        assert body["run"]["persons"] and body["incident"]["timeline"], role       # veri gerçekten döndü
+        assert body["incident"]["timeline"], role                                # veri gerçekten döndü
+        assert body["run"] is None and body["runs"] is None and body["report_rows"] is None, role   # yalnız admin
     user = responses(client_as("user"), s)
     assert user["state"]["cameras"][0]["people"] == [{"pid": 7, "status": "IHLAL"}]
-    assert user["report_rows"] == [{"pid": 7, "first": 0.1, "last": 9.5, "n": 40, "violation": True,
-                                    "cam": "cam1", "cam_name": "Kamera cam1"}]
-    assert user["state"]["cameras"][0]["meta"]["health"]["coverage"]["analyzing_by_reason"] == {"low_conf": 1}
+    meta = user["state"]["cameras"][0]["meta"]
+    assert set(meta) == {"status", "error", "health"} and set(meta["health"]) == {"flags"}    # kapsam/fps yok
 
 
 def test_admin_keeps_model_scores(api):
@@ -158,14 +158,16 @@ def test_role_view_never_changes_decisions(api):
     """Aynı olay iki rolde: karar alanları (tür, eksik ekipman, kimlikler, zaman, snapshot) birebir aynı."""
     s = seed(api)
     admin, user = responses(api, s), responses(client_as("user"), s)
-    strip = lambda a: {k: v for k, v in a.items() if k not in ("helmet_rate", "vest_rate")}  # noqa: E731
-    assert [strip(a) for a in admin["alerts"]] == user["alerts"]
-    assert {k: v for k, v in admin["incident"].items() if k != "timeline"} == \
+
+    def strip(d, extra=()):
+        return {k: v for k, v in d.items() if k not in ("helmet_rate", "vest_rate") + tuple(extra)}
+    assert [strip(a, app_module.ALERT_TECH_KEYS) for a in admin["alerts"]] == user["alerts"]
+    assert strip(admin["incident"], app_module.INCIDENT_TECH_KEYS + ("timeline", "run", "unclosed")) == \
         {k: v for k, v in user["incident"].items() if k != "timeline"}
-    assert [strip(e) for e in admin["incident"]["timeline"]] == user["incident"]["timeline"]
-    assert [{k: v for k, v in p.items() if k not in ("helmet_rate", "vest_rate")} for p in admin["run"]["persons"]] \
-        == user["run"]["persons"]
-    assert admin["summary"] == user["summary"]
+    assert [strip(e, app_module.TIMELINE_TECH_KEYS) for e in admin["incident"]["timeline"]] == \
+        user["incident"]["timeline"]
+    assert strip(admin["summary"], ("events", "by_camera")) == strip(user["summary"], ("by_camera",))
+    assert [strip(c, ("events",)) for c in admin["summary"]["by_camera"]] == user["summary"]["by_camera"]
 
 
 def test_alerts_are_allowlisted_for_every_role(api):
@@ -176,6 +178,56 @@ def test_alerts_are_allowlisted_for_every_role(api):
         assert '"conf"' not in text and "S3cr3t" not in text and "source_label" not in text
         for a in c.get("/api/alerts").json():
             assert set(a) <= set(app_module.ALERT_KEYS) | set(app_module.ALERT_SCORE_KEYS)
+
+
+# ---------------------------------------------------------------- teknik ayrıntılar yalnız admin
+TECH_INCIDENT = {"source_kind", "source_ref", "run_id", "track_id", "video_first_sec", "video_last_sec",
+                 "event_count", "ongoing_count"}
+
+
+def test_technical_details_are_admin_only(api):
+    s = seed(api)
+    admin = responses(api, s)
+    assert admin["me"]["permissions"]["technical"] is True
+    assert TECH_INCIDENT <= set(admin["incident"]) and {"run", "unclosed"} <= set(admin["incident"])
+    assert all({"video_time_sec", "box", "event_id"} <= set(e) for e in admin["incident"]["timeline"])
+    assert "events" in admin["summary"] and admin["runs"]["items"] and admin["report_rows"]
+    assert {"source_kind", "event_count", "run_count"} <= set(admin["cameras"][0])
+    assert "health" in admin["state"]["cameras"][0]["meta"] and "width" in admin["state"]["cameras"][0]["meta"]
+    for role in ("user", "viewer"):
+        body = responses(client_as(role), s)
+        assert body["me"]["permissions"]["technical"] is False, role
+        inc = body["incident"]
+        assert not (TECH_INCIDENT | {"run", "unclosed"}) & set(inc), (role, set(inc))
+        assert inc["missing"] and inc["status"] and inc["started_at"] and inc["camera"]["id"] == "cam1"
+        assert all(not {"video_time_sec", "box", "event_id", "ingested_at"} & set(e) for e in inc["timeline"])
+        assert all(not TECH_INCIDENT & set(i) for i in body["incidents"]["items"]), role
+        assert "events" not in body["summary"] and all("events" not in c for c in body["summary"]["by_camera"])
+        assert set(body["cameras"][0]) == {"id", "name", "last_seen_at", "incident_count"}, role
+        assert body["run"] is None and body["runs"] is None and body["report_rows"] is None, role
+    user = responses(client_as("user"), s)
+    assert user["alerts"] and all(not set(app_module.ALERT_TECH_KEYS) & set(a) for a in user["alerts"])
+    assert "S3cr3t" not in str(user)
+
+
+def test_cli_rename_set_role_and_list_shows_user(api, monkeypatch, capsys):
+    make_user("saha_eski", "supervisor")
+    assert cli.main(["rename", "saha_eski", "saha_yeni"]) == 0
+    assert cli.main(["set-role", "saha_yeni", "--role", "user"]) == 0
+    capsys.readouterr()
+    assert cli.main(["list"]) == 0
+    line = [x for x in capsys.readouterr().out.splitlines() if " saha_yeni " in x][0]
+    assert line.split()[2] == "user"
+    users = {u["username"]: u for u in api.get("/api/admin/users").json()}
+    assert "saha_eski" not in users and users["saha_yeni"]["role"] == "supervisor"
+    c = TestClient(app_module.app)
+    login(c, "saha_yeni")                                    # parola ve kimlik aynı kaldı
+    assert c.get("/api/auth/me").json()["permissions"]["technical"] is False
+    make_user("saha_dolu", "viewer")
+    assert cli.main(["rename", "saha_yeni", "saha_dolu"]) == 1  # ad çakışması
+    with pytest.raises(SystemExit):                           # son etkin yöneticinin rolü düşürülemez
+        cli.main(["set-role", "test_admin", "--role", "user"])
+    assert {u["username"]: u for u in api.get("/api/admin/users").json()}["test_admin"]["role"] == "admin"
 
 
 # ---------------------------------------------------------------- canlı uyarı ↔ snapshot ↔ run
@@ -190,23 +242,27 @@ def test_alert_snapshot_and_run_link_match_the_incident(api):
     for inc, evs, run in ((inc1, evs1, r1), (inc2, evs2, r2)):
         a = starts[str(inc)]
         assert a["snapshot"] == f"/snapshots/alert_{evs[0]['event_id']}.jpg"          # kendi olayının dosyası
-        assert a["run_id"] == str(run) and a["event_id"] == evs[0]["event_id"]
+        assert "run_id" not in a and a["event_id"] == evs[0]["event_id"]            # run kimliği yalnız admin
         assert user.get(a["snapshot"]).status_code == 200
         hist = user.get(f"/api/history/incidents/{inc}").json()
-        assert hist["snapshot"] == a["snapshot"] and hist["run"]["id"] == a["run_id"]  # geçmişle aynı ilişki
-        assert user.get(f"/api/history/runs/{a['run_id']}").json()["camera_id"] == a["camera_id"]
+        assert hist["snapshot"] == a["snapshot"] and "run" not in hist                   # geçmişle aynı görüntü
+        admin_alert = [x for x in api.get("/api/alerts").json() if x.get("incident_id") == str(inc)][0]
+        assert admin_alert["run_id"] == str(run)
+        assert api.get(f"/api/history/incidents/{inc}").json()["run"]["id"] == str(run)
+        assert api.get(f"/api/history/runs/{run}").json()["camera_id"] == a["camera_id"]
     scoped = client_as("user", cameras=["cam1"])
     assert {a["cam"] for a in scoped.get("/api/alerts").json()} == {"cam1"}
     assert scoped.get(starts[str(inc2)]["snapshot"]).status_code == 404               # kapsam dışı görüntü
-    assert scoped.get(f"/api/history/runs/{r2}").status_code == 404
+    assert client_as("admin", cameras=["cam1"]).get(f"/api/history/runs/{r2}").status_code == 404
 
 
 def test_running_run_is_reported_as_running(api):
     run = uuid.uuid4()
     p = frame_payload([event("start", run_id=run, incident_id=uuid.uuid4(), snapshot=B64_A)], run_id=run)
     assert post_frame(api, p).status_code == 200
-    r = client_as("user").get(f"/api/history/runs/{run}").json()
+    r = api.get(f"/api/history/runs/{run}").json()
     assert r["status"] == "running" and r["finished_at"] is None and r["persons"] == []
+    assert client_as("user").get(f"/api/history/runs/{run}").status_code == 403   # run raporu yalnız admin
 
 
 def test_duplicate_event_is_not_a_second_alert(api):
