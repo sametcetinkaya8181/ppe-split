@@ -26,7 +26,9 @@ services:
   # Tek seferlik: rol ayrımı (least privilege). Süper kullanıcıyla çalışır; idempotenttir. Parolalar boşsa atlanır.
   db-roles:
     build: ./dashboard
-    image: ppe-dashboard
+    # FAZ 02-A: üretimde sürüm etiketiyle sabitleyin (PPE_DASHBOARD_IMAGE=ppe-dashboard:<sürüm>, `up --no-build`);
+    # boşsa eski davranış: ppe-dashboard (= :latest). Üç servis AYNI imajı kullanmalıdır (migration = uygulama).
+    image: ${PPE_DASHBOARD_IMAGE:-ppe-dashboard}
     command: ["python", "-m", "db.roles", "setup"]
     read_only: true
     cap_drop: ["ALL"]
@@ -43,7 +45,7 @@ services:
   # Tek seferlik: şemayı Alembic ile head'e getirir (tablo sahibi ppe_migrator), uygulama yetkilerini tazeler, çıkar.
   migrate:
     build: ./dashboard
-    image: ppe-dashboard
+    image: ${PPE_DASHBOARD_IMAGE:-ppe-dashboard}
     command: ["sh", "-c", "alembic upgrade head && python -m db.roles grants"]
     read_only: true
     cap_drop: ["ALL"]
@@ -59,7 +61,7 @@ services:
 
   dashboard:
     build: ./dashboard
-    image: ppe-dashboard
+    image: ${PPE_DASHBOARD_IMAGE:-ppe-dashboard}
     ports:
       # Varsayılan yalnız bu bilgisayar. LAN için bunu DEĞİŞTİRMEYİN: docs/LAN_DEPLOYMENT.md (TLS ters vekil).
       - "${DASHBOARD_BIND:-127.0.0.1}:8000:8000"
@@ -100,8 +102,10 @@ services:
 
   # ---- Yalnızca testler (FAZ 01: ana `db` kümesinden TAMAMEN ayrı) ----
   # Önerilen: python tools/reliability/isolated_dashboard_tests.py  (rastgele parola, otomatik temizlik)
-  # Alternatif: docker compose --profile test run --rm tests
-  #             docker compose --profile test rm -sf test-db        (yalnız geçici test kümesini kaldırır)
+  # Alternatif: docker compose -p ppe-split-test --profile test run --rm tests
+  #             docker compose -p ppe-split-test --profile test rm -sf test-db   (yalnız geçici test kümesi)
+  # FAZ 02-A: `-p ppe-split-test` ZORUNLU tutun: proje adı verilmezse test container'ları üretim projesinin
+  # (ppe-split) içinde oluşur ve `docker compose down` gibi proje çapındaki komutlar üretim servislerini de etkiler.
   # Geçici küme: volume YOK (tmpfs), port yayını YOK, yalnız internal `testnet` ağında; üretim kimlik bilgisi
   # kullanılmaz. `cluster_name=ppe-ephemeral-test` işareti olmayan kümeye testler bağlanmayı REDDEDER
   # (dashboard/tests/db_guard.py, FAIL-CLOSED).

@@ -9,7 +9,9 @@ Koşullar:
      POSTGRES_PASSWORD, PPE_APP_PASSWORD, PPE_MIGRATOR_PASSWORD) süreç ortamında bulunmamalı; ortamdaki hiçbir değer
      (erişilebiliyorsa) kökteki/dedektördeki üretim .env gizli değerlerine eşit olmamalı.
   2. Adres: TEST_DATABASE_URL ayrıştırılabilir olmalı; veritabanı adı '_test' ile bitmeli; host üretim compose
-     servis adı ('db') olmamalı; parola üretim gizli değerlerine eşit olmamalı.
+     servis adı ('db') olmamalı ve izinli geçici küme adlarından biri olmalı (FAZ 02-A: TEST_HOSTS — localhost,
+     127.0.0.1, host.docker.internal veya başka projelerin PostgreSQL servisleri reddedilir; reddedilen adrese
+     BAĞLANTI DENENMEZ); parola üretim gizli değerlerine eşit olmamalı.
   3. Sunucu kimliği: kümenin `cluster_name` ayarı EPHEMERAL_MARKER olmalı (geçici küme `-c cluster_name=...` ile
      başlatılır; üretim kümesinde bu ayar yoktur).
   4. Küme içeriği: 'postgres', şablonlar ve adı '_test' ile biten veritabanları dışında veritabanı olmamalı
@@ -22,6 +24,9 @@ EPHEMERAL_MARKER = "ppe-ephemeral-test"
 FORBIDDEN_ENV = ("DATABASE_URL", "MIGRATE_DATABASE_URL", "ADMIN_DATABASE_URL", "POSTGRES_PASSWORD",
                  "PPE_APP_PASSWORD", "PPE_MIGRATOR_PASSWORD")
 PRODUCTION_HOSTS = frozenset({"db"})                 # docker-compose.yml ana PostgreSQL servisi
+# FAZ 02-A: yalnız bu adlara bağlanılır — compose `test-db` (profil test, internal testnet) ve izole koşucunun
+# (tools/reliability/isolated_dashboard_tests.py) internal ağdaki kümesi. Yeni bir koşucu eklenirse buraya eklenir.
+TEST_HOSTS = frozenset({"test-db", "ppe-review-test-db"})
 SECRET_KEYS = ("INGEST_TOKEN", "INGEST_TOKEN_NEXT", "POSTGRES_PASSWORD", "PPE_APP_PASSWORD", "PPE_MIGRATOR_PASSWORD")
 MIN_SECRET_LEN = 12
 _ROOT = Path(__file__).resolve().parents[2]
@@ -78,6 +83,9 @@ def check_url(url: str, secrets: list):
         raise UnsafeTestTarget(f"test veritabanı adı '_test' ile bitmeli (gelen: {u.database!r})")
     if (u.host or "").lower() in PRODUCTION_HOSTS:
         raise UnsafeTestTarget(f"test hedefi üretim PostgreSQL servisi ({u.host!r})")
+    if (u.host or "").lower() not in TEST_HOSTS:
+        raise UnsafeTestTarget(f"test hedefi izinli geçici küme adlarından biri değil ({u.host!r}; izinli: "
+                               f"{', '.join(sorted(TEST_HOSTS))}); bağlantı denenmedi")
     if u.password and u.password in secrets:
         raise UnsafeTestTarget("TEST_DATABASE_URL parolası üretim gizli değerine eşit")
     return u

@@ -116,8 +116,8 @@ COUNTS_SQL = ("SELECT (SELECT count(*) FROM violation_events)||','||(SELECT coun
 
 def _no_bench_rows(proj: str, cams: list) -> bool:
     """Ana / ppe-rel DB'sinde bench kamera kimlikleriyle satır yok mu (salt okunur). Yığın çalışmıyorsa True."""
-    db = f"{proj}-db-1"
-    if _containers(proj).get(db, "").split("|")[1:2] != ["running"]:
+    db = c.labeled_running(proj)                        # FAZ 02-A: etiketle çözülür (ad kalıbıyla değil)
+    if db is None:
         return True
     ids = ",".join(f"'{x}'" for x in cams)
     n = _psql_container(db, f"SELECT (SELECT count(*) FROM cameras WHERE id IN ({ids})) + "
@@ -130,9 +130,8 @@ def isolation_fingerprint() -> dict:
     fp = {}
     for proj in ("ppe-split", "ppe-rel"):
         cont = _containers(proj)
-        db = f"{proj}-db-1"
-        running = cont.get(db, "").split("|")[1:2] == ["running"]
-        fp[proj] = {"containers": cont, "db_counts": _psql_container(db, COUNTS_SQL) if running else "not_running"}
+        db = c.labeled_running(proj)                    # FAZ 02-A: etiketle çözülür (ad kalıbıyla değil)
+        fp[proj] = {"containers": cont, "db_counts": _psql_container(db, COUNTS_SQL) if db else "not_running"}
     fp["production_outbox"] = _dir_fp(c.DETECTOR / "outbox")
     fp["main_snapshots"] = _dir_fp(c.ROOT / "data" / "snapshots")
     return fp

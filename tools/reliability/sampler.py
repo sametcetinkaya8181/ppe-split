@@ -4,6 +4,7 @@ Kaynaklar: dedektör süreç ağacı (psutil), nvidia-smi, health/status dosyala
 Görüntü/gizli bilgi kaydedilmez."""
 import csv
 import json
+import os
 import subprocess
 import threading
 import time
@@ -126,6 +127,8 @@ class Sampler(threading.Thread):
                 self.rows.append(self.sample(i))
                 self.f.write(json.dumps(self.rows[-1], default=str) + "\n")
                 self.f.flush()
+                if i % 10 == 0:                # FAZ 02-A: ani kapanmada en fazla ~10 örnek kaybolur
+                    os.fsync(self.f.fileno())
             except Exception as exc:                          # noqa: BLE001 — örnekleyici ölmesin
                 self.f.write(json.dumps({"ts": c.utc(), "sampler_error": repr(exc)[:300]}) + "\n")
             i += 1
@@ -144,6 +147,11 @@ class Sampler(threading.Thread):
         row.update(nvidia())
         row["sys_cpu"] = psutil.cpu_percent(None)
         row["sys_mem_used_mb"] = round(psutil.virtual_memory().used / 2**20)
+        try:                                   # FAZ 02-A: kanıt + outbox diski (24 saatte doluluk riski)
+            du = psutil.disk_usage(str(self.out))
+            row["disk_free_gb"], row["disk_used_pct"] = round(du.free / 2**30, 2), du.percent
+        except OSError:
+            pass
         cams = {}
         for f in sorted(self.outbox_dir.glob("*.health.json")):
             try:
@@ -221,7 +229,7 @@ class Sampler(threading.Thread):
 FLAT = ("ts", "elapsed_sec", "det_procs", "det_rss_mb", "det_cpu", "det_handles", "det_threads", "gpu_util",
         "gpu_mem_used_mb", "gpu_temp_c", "gpu_power_w", "sys_cpu", "sys_mem_used_mb", "state_ms", "outbox_dir_bytes",
         "dash_cpu", "dash_mem_mb", "dash_cg_anon_mb", "dash_cg_file_mb", "dash_cg_kernel_mb", "dash_pids", "db_cpu",
-        "db_mem_mb", "pg_conns", "pg_db_bytes", "pg_events")
+        "db_mem_mb", "pg_conns", "pg_db_bytes", "pg_events", "disk_free_gb", "disk_used_pct")
 
 
 def write_csv(out: Path, rows: list) -> None:
@@ -267,7 +275,8 @@ def summarize(rows: list, skip_sec: float = 0.0) -> dict:
            "last_ts": rows[-1]["ts"]}
     for k in ("det_rss_mb", "det_cpu", "det_handles", "det_threads", "gpu_util", "gpu_mem_used_mb", "sys_cpu",
               "state_ms", "dash_mem_mb", "dash_cpu", "db_mem_mb", "pg_conns", "outbox_dir_bytes", "gpu_temp_c",
-              "sys_mem_used_mb", "dash_pids", "pg_db_bytes", "dash_cg_anon_mb", "dash_cg_file_mb", "dash_cg_kernel_mb"):
+              "sys_mem_used_mb", "dash_pids", "pg_db_bytes", "dash_cg_anon_mb", "dash_cg_file_mb", "dash_cg_kernel_mb",
+              "disk_free_gb"):
         vals = [r.get(k) for r in rows]
         if any(v is not None for v in vals):
             out[k] = {"p50": _pct(vals, 50), "p95": _pct(vals, 95), "max": max(v for v in vals if v is not None),

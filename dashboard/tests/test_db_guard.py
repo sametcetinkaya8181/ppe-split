@@ -45,10 +45,33 @@ def test_url_good_passes():
     ("postgresql+psycopg://u:p@test-db:5432/ppe", "_test"),
     ("postgresql+psycopg://u:p@db:5432/ppe_test", "üretim PostgreSQL servisi"),
     ("postgresql+psycopg://u:p@DB:5432/ppe_test", "üretim PostgreSQL servisi"),
+    # FAZ 02-A: host'taki/başka projelerdeki PostgreSQL servisleri — adres tarama/deneme yok
+    ("postgresql+psycopg://u:p@localhost:5432/ppe_test", "izinli geçici küme"),
+    ("postgresql+psycopg://u:p@127.0.0.1:5432/ppe_test", "izinli geçici küme"),
+    ("postgresql+psycopg://u:p@host.docker.internal:5432/ppe_test", "izinli geçici küme"),
+    ("postgresql+psycopg://u:p@career-agent-postgres:5432/ppe_test", "izinli geçici küme"),
+    ("postgresql+psycopg://u:p@ppe-rel-db-1:5432/ppe_test", "izinli geçici küme"),
+    ("postgresql+psycopg://u:p@/ppe_test", "izinli geçici küme"),          # unix soketi (host yok)
 ])
 def test_url_refusals(url, why):
     with pytest.raises(UnsafeTestTarget, match=why):
         check_url(url, [])
+
+
+@pytest.mark.parametrize("host", ["test-db", "ppe-review-test-db"])
+def test_url_allowed_hosts(host):
+    assert check_url(f"postgresql+psycopg://u:p@{host}:5432/ppe_test", []).host == host
+
+
+def test_refused_host_is_never_connected(monkeypatch):
+    """Reddedilen adres için motor bile oluşturulmaz (bağlantı denemesi yok)."""
+    import sqlalchemy
+
+    def boom(*a, **k):
+        raise AssertionError("reddedilen hedefe bağlantı denendi")
+    monkeypatch.setattr(sqlalchemy, "create_engine", boom)
+    with pytest.raises(UnsafeTestTarget, match="izinli geçici küme"):
+        assert_safe_test_target("postgresql+psycopg://u:p@career-agent-postgres:5432/x_test", environ={}, secrets=[])
 
 
 def test_url_with_production_password_is_refused_without_leaking_value():

@@ -81,6 +81,8 @@ def main(argv=None):
     ap.add_argument("--stride", type=int, default=2)
     ap.add_argument("--memprobe", action="store_true",
                     help="dashboard'u bellek probuyla başlat (memboot.py: RSS / glibc / Python heap / nesne sayıları)")
+    ap.add_argument("--min-disk-gb", type=float, default=5.0,
+                    help="FAZ 02-A: kanıt klasörünün diskinde boş alan bu değerin altında kalırsa güvenli durdur")
     a = ap.parse_args(argv)
     out = c.outdir(f"soak{a.hours:g}h")
     sd = out / f"cams4_stride{a.stride}"
@@ -107,7 +109,7 @@ def main(argv=None):
         fs = FaultSchedule(sim, a.fault_every, a.cut_sec, a.freeze_sec, faults)
         fs.start()
         res["measure_start_utc"] = c.utc()
-        t0, low = time.monotonic(), 0
+        t0, low, disk_low = time.monotonic(), 0, 0
         while time.monotonic() - t0 < a.hours * 3600:
             if p.poll() is not None:
                 res["detector_exit"] = p.returncode
@@ -116,6 +118,11 @@ def main(argv=None):
             low = low + 1 if (vm.available < stress.MEM_GUARD_BYTES or sw.percent > 90) else 0
             if low >= 10:
                 res["memory_guard"] = {"available_mb": round(vm.available / 2**20), "swap_percent": sw.percent}
+                break
+            free_gb = psutil.disk_usage(str(sd)).free / 2**30          # FAZ 02-A: disk doluluk koruması
+            disk_low = disk_low + 1 if free_gb < a.min_disk_gb else 0
+            if disk_low >= 10:
+                res["disk_guard"] = {"free_gb": round(free_gb, 2), "min_gb": a.min_disk_gb}
                 break
             time.sleep(5)
         res["measured_sec"] = round(time.monotonic() - t0, 1)
@@ -156,7 +163,7 @@ def main(argv=None):
         res["memprobe"] = collect_memprobe(sd, skip_sec=600)
     c.write_json(sd / "result.json", res)
     print(json.dumps({k: res.get(k) for k in ("started_utc", "measure_start_utc", "measure_end_utc", "measured_sec",
-                                              "delivery", "memory_guard", "detector_exit")}, ensure_ascii=False))
+                                              "delivery", "memory_guard", "disk_guard", "detector_exit")}, ensure_ascii=False))
     print("çıktı:", out)
 
 

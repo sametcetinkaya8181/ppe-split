@@ -91,12 +91,16 @@ def multipart(payload):
     return body, f"multipart/form-data; boundary={b}"
 
 
+# FAZ 02-A: test servisleri üretim compose projesinden (ppe-split) AYRI bir proje adıyla çalışır
+TEST_PROJECT = "ppe-split-test"
+
+
 def main():
     # FAZ 01: LAN test dashboard'u ana `db` kümesine değil, `tests` profilinin geçici `test-db` kümesine bağlanır
     # (compose depends_on: healthy). Ana veritabanına hiçbir komut gönderilmez.
     try:
         sh("docker", "network", "create", "--subnet", SUBNET, NET)
-        sh("docker", "compose", "--profile", "test", "run", "-d", "--name", "ppe-lantest-dash",
+        sh("docker", "compose", "-p", TEST_PROJECT, "--profile", "test", "run", "-d", "--name", "ppe-lantest-dash",
            "-e", "SECURITY_PROFILE=lan", "-e", f"ALLOWED_HOSTS={SITE}", "-e", f"TRUSTED_PROXIES={CADDY_IP}/32",
            "-e", f"INGEST_TOKEN={TOKEN}", "-e", "PASSWORD_HASH_PROFILE=default", "-e", f"LAN_SMOKE_PASS={PASS}",
            "-e", "DATA_DIR=/tmp/lan", "tests", "sh", "-c",
@@ -129,7 +133,7 @@ def main():
         sh("docker", "rm", "-f", "ppe-lantest-caddy", "ppe-lantest-dash", check=False)
         sh("docker", "network", "rm", NET, check=False)
         # geçici küme tmpfs'tedir: kaldırılınca ppe_lan_test de yok olur (ana kümeye DROP gönderilmez)
-        sh("docker", "compose", "--profile", "test", "rm", "-sf", "test-db", check=False)
+        sh("docker", "compose", "-p", TEST_PROJECT, "--profile", "test", "rm", "-sf", "test-db", check=False)
     for st, n, d in results:
         print(f"[{st}] {n}" + (f" — {d}" if d else ""))
     failed = sum(1 for r in results if r[0] == "FAIL")

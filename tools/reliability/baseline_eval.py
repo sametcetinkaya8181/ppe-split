@@ -48,7 +48,6 @@ VIDEOS = {"V1": DET / "videos" / "16533594_1920_1080_25fps.mp4",
           "V3": DET / "videos" / "8965526-uhd_2160_3840_25fps.mp4"}
 KNOWN = HERE / "baseline" / "known_errors.json"
 REFERENCE = HERE / "baseline" / "reference_mac_20261102.json"
-MAIN_DB = "ppe-split-db-1"
 PROTECTED_STACKS = ("ppe-split", "ppe-rel")
 LIMITATIONS = [
     "Ground-truth (ppe-eval-video/1) yok: precision, recall, yanlış alarm oranı ve gerçek kapsam hesaplanmadı.",
@@ -68,7 +67,12 @@ def log(msg):
 
 # ---------------------------------------------------------------- izolasyon
 def _main_db(sql: str) -> str:
-    r = subprocess.run(["docker", "exec", MAIN_DB, "sh", "-c",
+    # FAZ 02-A: ana DB adla değil, ppe-split/db etiketleri + ppe-split_pgdata volume'uyla doğrulanır
+    from docker_identity import main_db_problems
+    cid = c.labeled_running("ppe-split", "db", check=lambda i: main_db_problems(i, "ppe-split"))
+    if cid is None:
+        return "ERR:ana DB doğrulanamadı veya çalışmıyor"
+    r = subprocess.run(["docker", "exec", cid, "sh", "-c",
                         f'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAX -F "|" -c "{sql}"'],
                        capture_output=True, text=True, timeout=30)
     return r.stdout.strip() if r.returncode == 0 else f"ERR:{r.stderr.strip()[:80]}"

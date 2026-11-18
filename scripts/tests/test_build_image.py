@@ -22,6 +22,16 @@ def test_release_from_clean_tree():
                                "PPE_TREE_STATE": "clean", "PPE_VERSION": "0.10.7", "PPE_BUILD_KIND": "release"}
 
 
+def test_release_context_is_the_commit_not_the_working_tree():
+    p = b.plan(CLEAN, "0.10.7", set(), NOW)
+    assert b.context_spec(p) == ("git-archive", f"{SHA}:dashboard")
+
+
+def test_development_context_is_working_tree():
+    kind, ref = b.context_spec(b.plan(DIRTY, None, set(), NOW))
+    assert kind == "working-tree" and ref.endswith("dashboard")
+
+
 def test_release_refused_on_dirty_tree_lists_paths():
     with pytest.raises(b.BuildRefused, match="kirli") as ei:
         b.plan(DIRTY, "0.10.7", set(), NOW)

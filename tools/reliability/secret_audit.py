@@ -9,7 +9,14 @@ Denetimler:
   2. Test yığını env dosyaları (output/rel.env, output/eval_stack/rel.env): hiçbir üretim değerine eşit olmamalı.
   3. Test container'larının (ppe-eval, ppe-rel) çalışma ortamı (docker inspect): üretim değeri içermemeli.
   4. Kanıt klasörü tools/reliability/output/** metin dosyaları: üretim değeri geçmemeli.
-  5. Git: izlenen dosyalar + tüm geçmiş (git log --all -p): üretim değeri geçmemeli."""
+  5. Git: izlenen dosyalar + commit'lenmeye aday (izlenmeyen, yok sayılmayan) dosyalar + tüm geçmiş
+     (git log --all -p): üretim değeri geçmemeli.
+
+FAZ 02-A.1:
+  - `--prod-root <üretim worktree'si>`: üretim .env dosyaları bu araçla aynı worktree'de değilse (ör. araç
+    integration worktree'sinden çalışırken üretim ppe-split-main'de) referans değerler oradan okunur.
+  - FAIL-CLOSED: aranabilir tek bir üretim değeri bile yüklenemezse sonuç FAIL'dır (eskiden boş referans
+    kümesiyle "0 eşleşme = PASS" veriyordu)."""
 import argparse
 import json
 import subprocess
@@ -96,6 +103,9 @@ def audit() -> dict:
     res["evidence_output"] = {"text_files_scanned": files, "files_with_production_value": leaks}
     # 5. Git
     tracked = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, text=True).stdout.split("\0")
+    candidates = subprocess.run(["git", "ls-files", "-z", "--others", "--exclude-standard"], cwd=ROOT,
+                                capture_output=True, text=True).stdout.split("\0")
+    tracked += [f for f in candidates if f]
     tleaks = {}
     for f in filter(None, tracked):
         p = ROOT / f
@@ -105,9 +115,13 @@ def audit() -> dict:
                 tleaks[f] = h
     hist = subprocess.run(["git", "log", "--all", "-p", "--no-color"], cwd=ROOT, capture_output=True,
                           encoding="utf-8", errors="replace").stdout
-    res["git"] = {"tracked_files_scanned": len([f for f in tracked if f]), "tracked_with_production_value": tleaks,
+    res["git"] = {"tracked_files_scanned": len([f for f in tracked if f]),
+                  "untracked_candidates_scanned": len([f for f in candidates if f]),
+                  "tracked_with_production_value": tleaks,
                   "history_bytes_scanned": len(hist), "history_hits": _hits(hist, secrets)}
-    clean = (not any(v["equals_production"] for v in tenv.values())
+    res["production"]["reference_root"] = str(PROD_FILES["root_env"].parent)
+    clean = (bool(secrets)                              # FAZ 02-A.1: referans değer yoksa denetim anlamsız -> FAIL
+             and not any(v["equals_production"] for v in tenv.values())
              and not res["test_containers"].get("with_production_value") and "error" not in res["test_containers"]
              and not leaks and not tleaks and not res["git"]["history_hits"])
     res["verdict"] = "PASS" if clean else "FAIL"
@@ -117,8 +131,15 @@ def audit() -> dict:
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--prod-root", help="üretim .env dosyalarının bulunduğu worktree (varsayılan: bu worktree)")
+    args = ap.parse_args()
+    if args.prod_root:
+        pr = Path(args.prod_root).resolve()
+        PROD_FILES.update(root_env=pr / ".env", detector_env=pr / "detector" / ".env")
     res = audit()
-    if ap.parse_args().json:
+    if not res["production"]["searchable_secret_labels"]:
+        res["production"]["error"] = "aranabilir üretim değeri yüklenemedi (--prod-root?) — FAIL-CLOSED"
+    if args.json:
         print(json.dumps(res, ensure_ascii=False, indent=1))
     else:
         for k, v in res.items():

@@ -3,6 +3,17 @@
 Kullanım (proje kökünde):
     python scripts/backup.py                 # canlı sistem çalışırken
     python scripts/backup.py --quiesce       # yedek süresince dashboard durdurulur (önerilen; tutarlı kopya)
+    python scripts/backup.py --out <proje-dışı-yedek-klasörü> --operator "<ad>"   # bakım penceresi (dashboard KAPALI)
+    # --quiesce yalnız dashboard ÇALIŞIRKEN anlamlıdır; dashboard zaten kapalıysa --quiesce reddedilir (FAIL-CLOSED).
+
+FAZ 02-A.1: yazmadan önce hedef diskte yer denetlenir (`--min-free-gb`, varsayılan 2): tahmini yedek boyutu
+(veritabanı boyutu + snapshot klasörü) × 2 ayrıldıktan sonra bu kadar boş alan kalmayacaksa yedek ALINMAZ ve
+klasör oluşturulmaz. Bakım öncesi salt okunur ön kontrol: scripts/backup_preflight.py.
+
+FAZ 02-A: hedef ana PostgreSQL, `ppe-split` compose projesinin `db` servisi ETİKETLİ ve `ppe-split_pgdata`
+volume'unu bağlamış TEK container olarak meta veriden doğrulanır (ad/çalışma klasörüyle seçilmez). Snapshot kaynağı
+varsayılan olarak ana dashboard container'ının /data bağlamasıdır (betiğin çalıştığı worktree DEĞİL); klasör yoksa
+yedek REDDEDİLİR (eskiden sessizce 0 snapshot'la tamamlanabiliyordu).
 
 Çıktı: backups/ppe-<UTC zaman>/  (backups/ Git'e eklenmez)
     db.dump        pg_dump custom format (rollerin PAROLALARI içermez)
@@ -25,8 +36,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from ppe_ops import (ROOT, SNAPSHOT_NAME, OpsError, compose, db_exec, db_facts, fail, set_target, sha256,  # noqa: E402
-                     write_json)
+from ppe_ops import (ROOT, SNAPSHOT_NAME, OpsError, capacity_problems, db_exec, db_facts, dir_bytes,  # noqa: E402
+                     existing_parent, fail, main_snapshots_dir, psql, resolve_dashboard, set_target, sha256,
+                     start_container, stop_container, target_info, write_json)
 
 RESTORE_MD = """# Geri yükleme (özet)
 
@@ -53,26 +65,41 @@ def main():
     ap.add_argument("--quiesce", action="store_true", help="yedek süresince dashboard servisini durdur")
     # FAZ 01 (yalnız doğrulama): yedek aracını ana kümeye dokunmadan sınamak için işaretli geçici küme + kaynak klasör
     ap.add_argument("--target-container", help="cluster_name=ppe-ephemeral-test işaretli geçici PostgreSQL container'ı")
-    ap.add_argument("--snapshots-dir", help="snapshot kaynak klasörü (varsayılan: data/snapshots)")
+    ap.add_argument("--snapshots-dir", help="snapshot kaynak klasörü (varsayılan: ana dashboard'un /data bağlaması)")
+    ap.add_argument("--operator", default="", help="bakım kaydı için operatör adı/kısaltması (manifest'e yazılır)")
+    ap.add_argument("--min-free-gb", type=float, default=2.0,
+                    help="yedekten sonra hedef diskte kalması gereken en az boş alan (GiB); sağlanmazsa yedek alınmaz")
     args = ap.parse_args()
     if args.target_container and args.quiesce:
         fail("--quiesce yalnız ana yığında anlamlıdır; --target-container ile birlikte kullanılamaz")
+    if args.target_container and not args.snapshots_dir:
+        fail("--target-container ile --snapshots-dir zorunludur (ana snapshot klasörü doğrulama yedeğine karışmasın)")
 
     out_root = (ROOT / args.out).resolve()
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     dest = out_root / f"ppe-{stamp}"
-    snap_src = Path(args.snapshots_dir).resolve() if args.snapshots_dir else ROOT / "data" / "snapshots"
     try:
         if args.target_container:
             set_target(args.target_container)           # işaretsiz container -> OpsError (FAIL-CLOSED)
+        source = target_info()                          # ana küme: etiket + volume doğrulaması burada (komuttan önce)
+        snap_src = Path(args.snapshots_dir).resolve() if args.snapshots_dir else main_snapshots_dir()
+        dash = resolve_dashboard(require_running=True) if args.quiesce else None
         db_exec("pg_isready", "-q")
+        db_bytes = int(psql("SELECT pg_database_size(current_database())")[0][0])
     except OpsError as exc:
         fail(f"PostgreSQL hazır değil veya hedef reddedildi: {exc}")
+    if not snap_src.is_dir():
+        fail(f"snapshot klasörü yok: {snap_src} (yanlış worktree/bağlama?). Yedek alınmadı.")
+    # FAZ 02-A.1: kapasite FAIL-CLOSED — hiçbir şey yazılmadan ve dashboard durdurulmadan önce
+    free = shutil.disk_usage(existing_parent(out_root)).free
+    problems = capacity_problems(free, db_bytes + dir_bytes(snap_src), int(args.min_free_gb * 2**30))
+    if problems:
+        fail(f"{problems[0]}. Yedek alınmadı (klasör oluşturulmadı): {out_root}")
     dest.mkdir(parents=True, exist_ok=False)
     stopped = False
     try:
-        if args.quiesce:
-            compose("stop", "dashboard")
+        if dash is not None:
+            stop_container(dash["Id"])
             stopped = True
         before = db_facts()
         with open(dest / "db.dump", "wb") as f:
@@ -85,18 +112,19 @@ def main():
         snap_dst = dest / "snapshots"
         snap_dst.mkdir()
         files, skipped = {}, []
-        if snap_src.is_dir():
-            for p in sorted(snap_src.iterdir()):
-                if p.is_symlink() or not p.is_file() or not SNAPSHOT_NAME.match(p.name) or p.name.startswith(".tmp-"):
-                    skipped.append(p.name)
-                    continue
-                shutil.copy2(p, snap_dst / p.name)
-                files[p.name] = sha256(snap_dst / p.name)
+        for p in sorted(snap_src.iterdir()):
+            if p.is_symlink() or not p.is_file() or not SNAPSHOT_NAME.match(p.name) or p.name.startswith(".tmp-"):
+                skipped.append(p.name)
+                continue
+            shutil.copy2(p, snap_dst / p.name)
+            files[p.name] = sha256(snap_dst / p.name)
         refs = [r.split("/", 1)[1] for r in after["snapshot_refs"]]
         manifest = {
             "format": "ppe-backup/1",
             "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "quiesced": args.quiesce,
+            "source": {**source, "snapshots_dir": str(snap_src)},
+            "operator": args.operator,
             "alembic_revision": after["alembic_revision"],
             "postgres_version": db_exec("postgres", "--version").stdout.strip(),
             "counts": after["counts"],
@@ -118,7 +146,7 @@ def main():
         fail(f"yedek tamamlanamadı ({exc}); yarım klasör: {dest}")
     finally:
         if stopped:
-            compose("start", "dashboard", check=False)
+            start_container(dash["Id"], check=False)
 
     print(f"Yedek: {_shown(dest)}")
     print(f"  revision {manifest['alembic_revision']}, sayımlar {manifest['counts']}")

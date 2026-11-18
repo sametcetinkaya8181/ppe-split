@@ -32,6 +32,15 @@ VIDEOS = {"V1": DETECTOR / "videos" / "16533594_1920_1080_25fps.mp4",
 ADMIN_USER = "reladmin"
 sys.path.insert(0, str(DETECTOR))
 from evaluation.isolation import assert_env_isolated            # noqa: E402  (FAZ 10-A.5B: yalnız test kimliği)
+sys.path.append(str(ROOT / "scripts"))
+from docker_identity import IdentityError, resolve_compose_service  # noqa: E402  (FAZ 02-A: etiketle kimlik)
+
+# FAZ 02-A: bu araçlar container durdurur/yeniden başlatır ve test tablolarını boşaltır (TRUNCATE). Üretim yığını
+# hiçbir REL_PROJECT değeriyle hedeflenemez.
+PROTECTED_PROJECTS = frozenset({"ppe-split"})
+if PROJECT in PROTECTED_PROJECTS:
+    raise SystemExit(f"REDDEDİLDİ: REL_PROJECT={PROJECT!r} üretim yığınıdır; güvenilirlik araçları yalnız izole "
+                     "yığınlarda çalışır")
 
 
 def utc() -> str:
@@ -86,7 +95,20 @@ def compose(*args, check=True, capture=True, timeout=600) -> subprocess.Complete
 
 
 def container(service: str) -> str:
-    return f"{PROJECT}-{service}-1"
+    """Bu izole yığının servis container'ı. FAZ 02-A: ad kalıbıyla (`<proje>-<servis>-1`) DEĞİL, compose proje +
+    servis ETİKETLERİYLE çözülür ve tam ID döner; etiketli tek container yoksa hata (yanlış yığına komut gitmez)."""
+    try:
+        return resolve_compose_service(PROJECT, service, require_running=False)["Id"]
+    except IdentityError as exc:
+        raise RuntimeError(f"izole yığın container'ı doğrulanamadı: {exc}") from None
+
+
+def labeled_running(project: str, service: str = "db", check=None) -> str | None:
+    """Salt okunur parmak izi için: etiketli, TEK ve çalışan container'ın ID'si; yoksa/belirsizse None."""
+    try:
+        return resolve_compose_service(project, service, check=check)["Id"]
+    except IdentityError:
+        return None
 
 
 def psql(sql: str, timeout=30) -> str:

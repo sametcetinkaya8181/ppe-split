@@ -12,8 +12,12 @@ Kurallar:
     tree_state=dirty etiketleri taşır, uygulama açılışta UNVERIFIED uyarısı verir.
   - `ppe-dashboard:latest` (çalışan yığının kullandığı etiket) bu araç tarafından ASLA yazılmaz/değiştirilmez.
     Yeni sürüme geçiş ayrı ve onaylı bir dağıtım adımıdır (docs/DEPLOYMENT.md "Sürüm izlenebilirliği").
-  - Build sonrası etiketler `docker image inspect` ile doğrulanır; manifest build-manifests/ altına yazılır (Git dışı)."""
+  - Build sonrası etiketler `docker image inspect` ile doğrulanır; manifest build-manifests/ altına yazılır (Git dışı).
+  - FAZ 02-A: RELEASE build bağlamı çalışma ağacı DEĞİL, commit'in kendisidir (`git archive <sha>:dashboard`);
+    böylece Git'in yok saydığı yerel dosyalar (__pycache__, yerel .env, test çıktıları) release imajına giremez.
+    Bağlam arşivinin SHA-256'sı manifest'e yazılır. DEVELOPMENT build çalışma ağacından yapılmaya devam eder."""
 import argparse
+import hashlib
 import json
 import re
 import subprocess
@@ -86,13 +90,27 @@ def existing_tags() -> set:
     return set(out.split())
 
 
+def context_spec(p: dict) -> tuple:
+    """Saf: release -> ("git-archive", "<sha>:dashboard"); development -> ("working-tree", <dashboard yolu>)."""
+    if p["kind"] == "release":
+        return "git-archive", f"{p['build_args']['PPE_GIT_SHA']}:dashboard"
+    return "working-tree", str(ROOT / "dashboard")
+
+
 def build(p: dict) -> dict:
-    cmd = ["docker", "build", str(ROOT / "dashboard")]
+    kind, ref = context_spec(p)
+    tar = None
+    if kind == "git-archive":
+        # tree arşivi varsayılan olarak ŞU ANKİ zamanı kullanır; commit zamanı verilerek bağlam özeti tekrarlanabilir olur
+        ctime = git("show", "-s", "--format=%ct", p["build_args"]["PPE_GIT_SHA"])
+        tar = subprocess.run(["git", "archive", "--format=tar", f"--mtime=@{ctime}", ref], cwd=ROOT, check=True,
+                             capture_output=True).stdout
+    cmd = ["docker", "build", "-" if tar is not None else ref]
     for k, v in p["build_args"].items():
         cmd += ["--build-arg", f"{k}={v}"]
     for t in p["tags"]:
         cmd += ["-t", t]
-    subprocess.run(cmd, check=True)
+    subprocess.run(cmd, check=True, input=tar)
     labels = json.loads(subprocess.run(["docker", "image", "inspect", p["tags"][0], "--format",
                                         "{{json .Config.Labels}}"], capture_output=True, text=True, check=True).stdout)
     want = {"org.opencontainers.image.revision": p["build_args"]["PPE_GIT_SHA"],
@@ -105,6 +123,8 @@ def build(p: dict) -> dict:
     image_id = subprocess.run(["docker", "image", "inspect", p["tags"][0], "--format", "{{.Id}}"],
                               capture_output=True, text=True, check=True).stdout.strip()
     manifest = {"image_id": image_id, "tags": p["tags"], **p["build_args"], "labels_verified": True,
+                "context": f"{kind}:{ref}" if kind == "git-archive" else kind,
+                "context_sha256": hashlib.sha256(tar).hexdigest() if tar is not None else None,
                 "dirty_paths": p["dirty_paths"][:200]}
     MANIFEST_DIR.mkdir(exist_ok=True)
     name = p["tags"][0].replace(":", "_").replace("/", "_")
