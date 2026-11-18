@@ -1,0 +1,178 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "ppe-dataset-manifest-1.schema.json",
+ "title": "ppe-dataset-manifest/1",
+ "description": "Sürümlü veri kümesi manifesti (FAZ 10-A.3). Özet, sayım, sızıntı ve dondurma kuralları evaluation/datamanifest.py tarafından denetlenir. Bkz. docs/data/DATASET_SPEC.md.",
+ "type": "object",
+ "required": [
+  "schema_version",
+  "dataset_id",
+  "dataset_version",
+  "annotation_schema_version",
+  "created_at",
+  "data_classification",
+  "label_map",
+  "split_policy",
+  "items",
+  "label_counts",
+  "scenario_distribution",
+  "content_sha256",
+  "test_freeze"
+ ],
+ "properties": {
+  "schema_version": {
+   "const": "ppe-dataset-manifest/1"
+  },
+  "dataset_id": {
+   "type": "string",
+   "pattern": "^[A-Za-z0-9_-]{1,40}$"
+  },
+  "dataset_version": {
+   "type": "string",
+   "pattern": "^\\d+\\.\\d+\\.\\d+$"
+  },
+  "annotation_schema_version": {
+   "const": "ppe-annotation/1"
+  },
+  "created_at": {
+   "type": "string",
+   "format": "date-time"
+  },
+  "data_classification": {
+   "enum": [
+    "SYNTHETIC",
+    "PERSONAL_DATA",
+    "LICENSED_PUBLIC"
+   ]
+  },
+  "label_map": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "integer"
+   }
+  },
+  "split_policy": {
+   "type": "object",
+   "required": [
+    "group_by",
+    "seed",
+    "ratios"
+   ],
+   "properties": {
+    "group_by": {
+     "enum": [
+      "site_id",
+      "camera_id",
+      "session_id",
+      "source_video_id"
+     ]
+    },
+    "seed": {
+     "type": "string"
+    },
+    "ratios": {
+     "type": "object",
+     "required": [
+      "train",
+      "val",
+      "test"
+     ]
+    }
+   }
+  },
+  "items": {
+   "type": "array",
+   "minItems": 1,
+   "items": {
+    "type": "object",
+    "required": [
+     "media_id",
+     "media_path",
+     "media_sha256",
+     "annotation_path",
+     "annotation_sha256",
+     "annotation_version",
+     "split",
+     "source_ref",
+     "authorization",
+     "license",
+     "site_id",
+     "camera_id",
+     "session_id",
+     "source_video_id",
+     "recorded_day"
+    ],
+    "properties": {
+     "media_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,40}$"
+     },
+     "media_path": {
+      "type": "string",
+      "description": "köke göre göreli POSIX yolu; '..', mutlak yol, sembolik bağ yasak"
+     },
+     "media_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+     },
+     "annotation_path": {
+      "type": "string"
+     },
+     "annotation_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+     },
+     "annotation_version": {
+      "type": "integer",
+      "minimum": 1
+     },
+     "split": {
+      "enum": [
+       "train",
+       "val",
+       "test"
+      ]
+     },
+     "source_ref": {
+      "type": "string"
+     },
+     "dhash": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "pattern": "^[0-9a-f]{16}$"
+      }
+     }
+    }
+   }
+  },
+  "content_sha256": {
+   "type": "string",
+   "pattern": "^[0-9a-f]{64}$"
+  },
+  "test_freeze": {
+   "type": "object",
+   "required": [
+    "frozen"
+   ],
+   "properties": {
+    "frozen": {
+     "type": "boolean"
+    },
+    "test_items_sha256": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{64}$"
+    },
+    "frozen_at": {
+     "type": "string"
+    },
+    "approved_by_role": {
+     "type": "string"
+    }
+   }
+  },
+  "validation": {
+   "type": "object"
+  }
+ }
+}

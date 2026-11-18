@@ -21,12 +21,47 @@ ppe-split/
 
 ## A) İLK KURULUM (yalnızca bir kez)
 
-### 1. Dashboard'u başlat
-Proje klasöründe (`docker-compose.yml`'in olduğu yer):
+### 1. Dashboard'u ve veritabanını başlat
+Proje klasöründe (`docker-compose.yml`'in olduğu yer) önce `.env` oluştur; `POSTGRES_PASSWORD`, `PPE_APP_PASSWORD`, `PPE_MIGRATOR_PASSWORD` ve `INGEST_TOKEN` değerlerini üret (`python -c "import secrets; print(secrets.token_urlsafe(32))"`). `.env` Git'e eklenmez. Aynı `INGEST_TOKEN`'ı `detector/.env` içine de yaz.
 
+    Copy-Item .env.example .env        # Mac/Linux: cp .env.example .env
     docker compose up -d --build
 
-Tarayıcıda http://localhost:8000 aç. Bu aşamada "Dedektör bağlı değil" yazması normaldir.
+Bu komut PostgreSQL 17'yi (`db`) başlatır, veritabanı rollerini ayırır (`db-roles`: tablolar `ppe_migrator`'a ait, dashboard yalnız SELECT/INSERT/UPDATE yetkili `ppe_app` ile bağlanır), şemayı Alembic ile kurar (`migrate`) ve ardından dashboard'u açar. Kontrol: `docker compose ps` ve http://127.0.0.1:8000/health/ready (`"status":"ready"`).
+
+**İlk yöneticiyi oluştur** (parola gizli sorulur; arayüze giriş için zorunlu):
+
+    docker compose exec dashboard python -m auth.cli create admin --role admin
+
+Operasyonel kullanıcı (parola yine gizli sorulur): `docker compose exec dashboard python -m auth.cli create saha1 --role user`
+
+Tarayıcıda http://localhost:8000 aç ve giriş yap. Roller: `viewer` (istatistik ve görüntüsüz liste), `user` = `supervisor` (+ canlı yayın, uyarılar, ihlal görüntüleri, insan incelemesi kararı, atanan kameralar; model olasılıkları ve teknik ayrıntılar — run raporları, iz no, video saniyesi, kaynak adresi — **yok**), `admin` (+ model olasılıkları, teknik ayrıntılar ve run raporları, kullanıcı yönetimi ve denetim kaydı). Ayrıntı: [docs/SECURITY.md](docs/SECURITY.md). Dashboard varsayılan olarak yalnızca bu bilgisayardan erişilir; PostgreSQL portu dışarı açılmaz. LAN erişimi yalnız TLS ters vekil ile ve ön koşullar sağlandıktan sonra: [docs/LAN_DEPLOYMENT.md](docs/LAN_DEPLOYMENT.md).
+
+Testler (FAZ 01: ana veritabanına **bağlanmaz**; geçici, işaretli PostgreSQL kümesi): `python tools/reliability/isolated_dashboard_tests.py` · dedektör: `cd detector; .venv\Scripts\python -m pytest`. Ayrıntı: [docs/TEST_REPORT.md](docs/TEST_REPORT.md). Sürüm izlenebilir imaj: `python scripts/build_image.py` ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#sürüm-izlenebilirliği-faz-01)).
+
+**Belgeler:** [Mimari](docs/ARCHITECTURE.md) · [Veritabanı ve roller](docs/DATABASE.md) · [Güvenlik](docs/SECURITY.md) · [Yedekleme/geri yükleme](docs/BACKUP_RESTORE.md) · [Kurulum/işletim](docs/DEPLOYMENT.md) · [Test raporu](docs/TEST_REPORT.md) · [Tehdit modeli](docs/THREAT_MODEL.md) · [LAN dağıtımı](docs/LAN_DEPLOYMENT.md) · [KVKK hazırlık](docs/PRIVACY_READINESS.md) · [Lisans](docs/LICENSE_REVIEW.md) · [FAZ 6 raporu](docs/PHASE_6_REPORT.md)
+
+**Kamera kimliği:** Her kaynağa sabit bir kimlik verin: `VIDEO_SOURCES=[giris]Giriş kapısı=rtsp://...,[kule]videos/kule.mp4`. Kimlik kaynak sırası değişse de aynı kalır. Önek yoksa eski davranış (`cam1`, `cam2`… sıraya bağlı) kullanılır ve dedektör açılışta uyarır; `CAMERA_ID_MODE=source` ile kimlik kaynaktan türetilir. Geçmiş kayıtlar run'ın kendi kaynak etiketiyle gösterilir; FAZ 5 öncesi kayıtlar "Eski kayıt: kaynak doğrulanamadı" olarak görünür.
+
+**Yedek:** `python scripts/backup.py --quiesce` (PostgreSQL + snapshot'lar → `backups/`), doğrulama: `python scripts/restore_check.py backups\ppe-<zaman>` (izole veritabanına yükler, ana DB'ye dokunmaz).
+
+**Kalıcı kayıt:** İhlal olayları (`violation_events`), ihlal yaşam döngüleri (`incidents`), çalışmalar (`detector_runs`) ve kişi raporları (`person_run_reports`) PostgreSQL'e yazılır; snapshot JPEG'leri `data/snapshots/alert_<event_id>.jpg` dosyasındadır (DB'de yalnızca göreli yol). Dashboard yalnızca kayıt başarıyla commit edildikten sonra `200` döner; DB erişilemezse olaylı istekler `503` alır ve dedektör aynı olay kimlikleriyle tekrar dener. Canlı görüntü DB'den bağımsızdır. Kimliği olmayan (eski sürüm dedektör) olaylar `422` ile reddedilir.
+
+Dashboard sınırları (kök `.env` / compose ortamı): `MAX_FRAME_BYTES` (2 MiB), `MAX_SNAPSHOT_BYTES` (1 MiB), `MAX_EVENTS_PER_REQUEST` (200), `MAX_REPORT_BYTES` (1 MiB), `MAX_REPORT_ROWS` (5000), `HEARTBEAT_SEC` (30). Olay payload'ı form alanı olarak Starlette tarafından 1 MiB ile sınırlıdır.
+
+**Geçmiş ve istatistik (PostgreSQL'den):** Dashboard'da *İhlal Geçmişi*, *İstatistikler* ve *Kamera / Run Raporları* sekmeleri. Her satır bir **ihlaldir** (incident: aynı `incident_id`'li başlangıç → sürüyor → bitiş olayları); ham olay sayısı ayrıca gösterilir, "sürüyor" tekrarları ihlal sayısını artırmaz. İz ID, run içindeki ByteTrack numarasıdır; kişi kimliği değildir. API (salt okuma, JSON):
+
+| Uç | Açıklama |
+|---|---|
+| `GET /api/history/incidents` | `camera_id`, `run_id`, `from`, `to` (ISO 8601, saat dilimi zorunlu; `from` dahil, `to` hariç; ihlalin başladığı ana göre), `status` (tekrarlanabilir), `equipment` (`helmet`, `vest`, `both`, `helmet_only`, `vest_only`), `limit` (1–200), `cursor` (`next_cursor` değeri) |
+| `GET /api/history/incidents/{id}` | Ayrıntı + olay zaman çizelgesi, kamera, run, snapshot, rapordaki kapanış nedeni |
+| `GET /api/history/summary` | Doğrulanmış ihlal (başlangıç olayı olan), baret/yelek/ikisi, durum dağılımı, kamera dağılımı, günlük trend (`tz`, ör. `Europe/Istanbul`), ham olay sayıları |
+| `GET /api/history/cameras` | Kayıtlı kameralar |
+| `GET /api/history/runs`, `GET /api/history/runs/{id}` | Run geçmişi (`camera_id`, `from`, `to`, `status`, sayfalama), kişi raporu ve ihlal sayıları |
+
+İhlal durumları: `closed` (bitiş olayı var), `active` (bitiş yok, run çalışıyor ve hem run'dan hem ihlalden son `ACTIVE_WINDOW_SEC` (varsayılan 90 sn) içinde kayıt geldi), `stale` / `run_end` (bitiş yok, run raporu bu nedenle kapattığını bildirdi), `orphan` (başlangıç olayı yok), `unknown` (kesin değil; `status_reason` nedenini verir: canlılık sinyali yok, rapor listesi taşmış, raporda yok vb.). Bitiş olayı olmayan ihlal yalnızca canlılık kanıtı varsa `active` sayılır. Tüm geçmiş ve canlı uçlar oturum ve rol gerektirir (uç matrisi: docs/SECURITY.md).
+
+**INGEST_TOKEN:** Boşsa ingest uçları kimlik doğrulamasızdır (dashboard yalnızca `127.0.0.1`'e bağlıyken kabul edilebilir). Doluysa kök `.env` ve `detector/.env` içinde **aynı** olmalıdır; uyuşmazsa dashboard `401` döner ve dedektör o olayları **düşürür** (log'da `INGEST_TOKEN` uyarısı görünür).
 
 ### 2. Dedektörün ortamını kur
 **Mac / Linux:**
@@ -122,12 +157,27 @@ Her seferinde yazmak istemezsen `detector/.env` oluştur (örnek: `.env.example`
 | `DEVICE` | otomatik | `mps`, `0` (NVIDIA) veya `cpu` |
 | `MODEL_PATH` | `models/best.pt` | Model dosyası |
 | `VIDEO_SOURCE` | `videos/video.mp4` | Dosya, `0` (webcam) veya RTSP adresi |
+| `CAMERA_ID_MODE` | `index` | Öneksiz kaynaklar için: `index` (cam1, cam2… sıraya bağlı) veya `source` (kaynaktan türetilir) |
 | `DASHBOARD_URL` | `http://localhost:8000` | Dashboard adresi |
 | `IMGSZ` | `960` | Düşürürsen hızlanır (`640`), doğruluk azalabilir |
 | `VID_STRIDE` | `1` | Her N. kareyi işle (`2` ≈ 2 kat hızlı) |
 | `STREAM_WIDTH` | `960` | Dashboard'a giden kare genişliği |
-| `LOOP` | `1` | Video bitince başa sar |
+| `LOOP` | `1` | Video DOSYASI bitince başa sar (canlı kaynak koparsa LOOP'tan bağımsız yeniden bağlanılır) |
+| `STREAM_READ_TIMEOUT_SEC` | `10` | Ağ akışında okuma zaman aşımı; donmuş/kopmuş kamera bu sürede algılanır (FAZ 10-A) |
+| `RECONNECT_BASE_SEC` / `RECONNECT_MAX_SEC` | `2` / `60` | Yeniden bağlanma üstel geri çekilmesi; bağlantı yokken ekranda "KAMERA BAGLANTISI YOK" |
 | `INGEST_TOKEN` | boş | Doluysa dashboard (compose) ile aynı olmalı |
+| `SEND_TIMEOUT` | `5` | Dashboard HTTP isteği zaman aşımı (sn) |
+| `OUTBOX_ENABLED` | `1` | Olay/raporları önce diskteki kalıcı kuyruğa (SQLite WAL) yaz; `0` = eski bellek içi kuyruk |
+| `OUTBOX_DIR` | `detector/outbox` | Kalıcı kuyruk klasörü (Git dışı; ihlal görüntüsü içerir) |
+| `OUTBOX_MAX_BYTES` / `OUTBOX_MAX_ITEMS` | 512 MiB / 100000 | Dolunca yalnız `ongoing` seyreltilir; start/end/rapor sessizce düşmez (docs/OUTBOX.md) |
+| `EVENT_QUEUE_MAX` | `2000` | Yalnız `OUTBOX_ENABLED=0` ile: bellekteki en fazla olay |
+| `DRAIN_TIMEOUT` | `10` | Ctrl+C / kapanışta bekleyen olayları göndermek için en fazla süre (sn) |
+
+**Olay teslimi (FAZ 7):** Her ihlal olayı `event_id`, `run_id`, `incident_id`, `camera_id` ve UTC `occurred_at` ile üretilir ve önce kamera başına kalıcı outbox'a (SQLite WAL, `synchronous=FULL`) yazılır. Dashboard'a ulaşılamazsa, dedektör çökerse veya zorla kapatılırsa bekleyen olaylar bir sonraki başlatmada aynı kimliklerle gönderilir; PostgreSQL tekrarları ayıklar (en az bir kez teslim + tekilleştirme; "exactly-once" iddiası yok). Kamera kapalıyken bekleyenleri göndermek: `python outbox.py drain <kamera>`. Ayrıntı: [docs/OUTBOX.md](docs/OUTBOX.md).
+
+**İşletim gözlemi (FAZ 9):** Her kamera için `detector/outbox/<kamera>.health.json` (FPS, gecikme, aşama süreleri, CPU/RAM/GPU, bağlantı durumu, değerlendirilemeyen kişiler ve nedenleri) ve `<kamera>.status.json` (outbox birikmesi ve uyarıları) yazılır; gizli bilgi/görüntü içermez. Canlı ekranda izlenemeyen kamera ("sinyal yok", "akış takıldı", "dedektörden görüntü gelmiyor") ve değerlendirilemeyen kişiler açıkça yazılır. Yöneticiler için `GET /api/ops/metrics` (JSON). Ultralytics anonim analitiği varsayılan kapalıdır (`YOLO_OFFLINE=1`). Ölçümler ve kapasite: [docs/PERFORMANCE_BASELINE.md](docs/PERFORMANCE_BASELINE.md), [docs/PHASE_9_REPORT.md](docs/PHASE_9_REPORT.md).
+
+Dedektör birim testleri (GPU gerekmez): `cd detector; .venv\Scripts\python -m pip install -r requirements-dev.txt; .venv\Scripts\python -m pytest`
 
 ## Sorun giderme
 - **`Cihaz: cpu` yazıyor:** `DEVICE=mps python detector.py` ile dene. Kontrol: `python -c "import torch; print(torch.backends.mps.is_available())"` → `True` olmalı.

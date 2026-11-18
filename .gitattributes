@@ -1,0 +1,2 @@
+# Satır sonları depoda LF; Docker içinde çalışan dosyalar CRLF'e dönüşmesin.
+* text=auto eol=lf

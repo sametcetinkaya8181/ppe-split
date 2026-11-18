@@ -1,0 +1,504 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "ppe-annotation-1.schema.json",
+ "title": "ppe-annotation/1",
+ "description": "PPE insan etiket belgesi (FAZ 10-A.3). Yapısal sözleşme; anlamsal kurallar (UNKNOWN/MISSING çelişkisi, ilişki, incident aralığı, inceleme bağımsızlığı, gizlilik) evaluation/datacontract.py tarafından denetlenir. Bkz. docs/data/DATASET_SPEC.md.",
+ "type": "object",
+ "required": [
+  "schema_version",
+  "annotation_version",
+  "dataset_id",
+  "origin",
+  "annotators",
+  "media",
+  "frames",
+  "incidents",
+  "reviews"
+ ],
+ "properties": {
+  "schema_version": {
+   "const": "ppe-annotation/1"
+  },
+  "annotation_version": {
+   "type": "integer",
+   "minimum": 1
+  },
+  "dataset_id": {
+   "type": "string",
+   "pattern": "^[A-Za-z0-9_-]{1,40}$"
+  },
+  "origin": {
+   "const": "human"
+  },
+  "annotators": {
+   "type": "array",
+   "items": {
+    "type": "string",
+    "pattern": "^(ann|rev|adj)_[A-Za-z0-9]{1,16}$"
+   },
+   "minItems": 1
+  },
+  "media": {
+   "type": "object",
+   "required": [
+    "media_id",
+    "source_video_id",
+    "site_id",
+    "camera_id",
+    "session_id",
+    "recorded_day",
+    "fps",
+    "frame_count",
+    "width",
+    "height",
+    "pts_mode",
+    "scenario_tags",
+    "provenance",
+    "authorization",
+    "license"
+   ],
+   "properties": {
+    "media_id": {
+     "type": "string",
+     "pattern": "^[A-Za-z0-9_-]{1,40}$"
+    },
+    "source_video_id": {
+     "type": "string",
+     "pattern": "^[A-Za-z0-9_-]{1,40}$"
+    },
+    "site_id": {
+     "type": "string",
+     "pattern": "^site_[A-Za-z0-9]{1,16}$"
+    },
+    "camera_id": {
+     "type": "string",
+     "pattern": "^[A-Za-z0-9_-]{1,40}$"
+    },
+    "session_id": {
+     "type": "string",
+     "pattern": "^[A-Za-z0-9_-]{1,40}$"
+    },
+    "recorded_day": {
+     "type": "string",
+     "format": "date"
+    },
+    "fps": {
+     "type": "number",
+     "exclusiveMinimum": 0
+    },
+    "frame_count": {
+     "type": "integer",
+     "minimum": 1
+    },
+    "width": {
+     "type": "integer",
+     "minimum": 1
+    },
+    "height": {
+     "type": "integer",
+     "minimum": 1
+    },
+    "pts_mode": {
+     "enum": [
+      "cfr",
+      "vfr"
+     ]
+    },
+    "scenario_tags": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    },
+    "provenance": {
+     "type": "object",
+     "required": [
+      "source_ref"
+     ]
+    },
+    "authorization": {
+     "type": "object",
+     "required": [
+      "status"
+     ],
+     "properties": {
+      "status": {
+       "enum": [
+        "APPROVED",
+        "PENDING",
+        "REJECTED",
+        "WITHDRAWN",
+        "SYNTHETIC"
+       ]
+      },
+      "reference": {
+       "type": [
+        "string",
+        "null"
+       ]
+      }
+     }
+    },
+    "license": {
+     "type": "object",
+     "required": [
+      "id",
+      "status"
+     ],
+     "properties": {
+      "id": {
+       "type": "string"
+      },
+      "status": {
+       "enum": [
+        "VERIFIED",
+        "LICENSE_UNVERIFIED",
+        "SYNTHETIC"
+       ]
+      }
+     }
+    }
+   }
+  },
+  "frames": {
+   "type": "array",
+   "minItems": 1,
+   "items": {
+    "type": "object",
+    "required": [
+     "frame_index",
+     "pts_sec",
+     "persons"
+    ],
+    "properties": {
+     "frame_index": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "pts_sec": {
+      "type": "number",
+      "minimum": 0
+     },
+     "persons": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "required": [
+        "track_id",
+        "box",
+        "visibility",
+        "occlusion",
+        "truncated",
+        "annotator_confidence",
+        "person_status",
+        "label_origin",
+        "helmet",
+        "vest",
+        "review"
+       ],
+       "properties": {
+        "track_id": {
+         "type": "string",
+         "pattern": "^[A-Za-z0-9_-]{1,40}$",
+         "description": "video-yerel iz kimliği; gerçek kişi kimliği DEĞİL"
+        },
+        "box": {
+         "type": "array",
+         "items": {
+          "type": "number"
+         },
+         "minItems": 4,
+         "maxItems": 4,
+         "description": "[x1, y1, x2, y2] piksel, x2>x1, y2>y1"
+        },
+        "visibility": {
+         "enum": [
+          "full",
+          "partial",
+          "heavy_occlusion",
+          "head_hidden",
+          "torso_hidden",
+          "head_torso_hidden"
+         ]
+        },
+        "occlusion": {
+         "enum": [
+          "none",
+          "partial",
+          "heavy"
+         ]
+        },
+        "truncated": {
+         "type": "boolean"
+        },
+        "annotator_confidence": {
+         "enum": [
+          "high",
+          "medium",
+          "low"
+         ]
+        },
+        "person_status": {
+         "enum": [
+          "EVALUABLE",
+          "NOT_EVALUABLE"
+         ]
+        },
+        "not_evaluable_reason": {
+         "enum": [
+          "too_small",
+          "motion_blur",
+          "low_light",
+          "truncated",
+          "crowd_overlap",
+          "other"
+         ]
+        },
+        "label_origin": {
+         "enum": [
+          "human",
+          "model_prelabel"
+         ]
+        },
+        "reentry": {
+         "type": "boolean"
+        },
+        "helmet": {
+         "type": "object",
+         "required": [
+          "status",
+          "box"
+         ],
+         "additionalProperties": false,
+         "properties": {
+          "status": {
+           "enum": [
+            "PRESENT",
+            "MISSING",
+            "UNKNOWN",
+            "NOT_EVALUABLE"
+           ]
+          },
+          "box": {
+           "oneOf": [
+            {
+             "type": "array",
+             "items": {
+              "type": "number"
+             },
+             "minItems": 4,
+             "maxItems": 4,
+             "description": "[x1, y1, x2, y2] piksel, x2>x1, y2>y1"
+            },
+            {
+             "type": "null"
+            }
+           ]
+          }
+         }
+        },
+        "vest": {
+         "type": "object",
+         "required": [
+          "status",
+          "box"
+         ],
+         "additionalProperties": false,
+         "properties": {
+          "status": {
+           "enum": [
+            "PRESENT",
+            "MISSING",
+            "UNKNOWN",
+            "NOT_EVALUABLE"
+           ]
+          },
+          "box": {
+           "oneOf": [
+            {
+             "type": "array",
+             "items": {
+              "type": "number"
+             },
+             "minItems": 4,
+             "maxItems": 4,
+             "description": "[x1, y1, x2, y2] piksel, x2>x1, y2>y1"
+            },
+            {
+             "type": "null"
+            }
+           ]
+          }
+         }
+        },
+        "review": {
+         "type": "object",
+         "required": [
+          "status"
+         ],
+         "properties": {
+          "status": {
+           "enum": [
+            "pending",
+            "agreed",
+            "disputed",
+            "adjudicated"
+           ]
+          },
+          "reviewer": {
+           "type": "string",
+           "pattern": "^(ann|rev|adj)_[A-Za-z0-9]{1,16}$"
+          },
+          "adjudicator": {
+           "type": "string",
+           "pattern": "^(ann|rev|adj)_[A-Za-z0-9]{1,16}$"
+          },
+          "reason": {
+           "type": [
+            "string",
+            "null"
+           ]
+          },
+          "resolution": {
+           "type": [
+            "string",
+            "null"
+           ]
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "incidents": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "required": [
+     "incident_id",
+     "track_id",
+     "violation_type",
+     "start_sec",
+     "end_sec",
+     "uncertainty",
+     "review"
+    ],
+    "properties": {
+     "incident_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,40}$"
+     },
+     "track_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,40}$"
+     },
+     "violation_type": {
+      "enum": [
+       "missing_helmet",
+       "missing_vest"
+      ]
+     },
+     "start_sec": {
+      "type": "number",
+      "minimum": 0
+     },
+     "end_sec": {
+      "type": [
+       "number",
+       "null"
+      ]
+     },
+     "uncertainty": {
+      "enum": [
+       "certain",
+       "uncertain"
+      ]
+     },
+     "review": {
+      "type": "object",
+      "required": [
+       "status"
+      ],
+      "properties": {
+       "status": {
+        "enum": [
+         "pending",
+         "agreed",
+         "disputed",
+         "adjudicated"
+        ]
+       },
+       "reviewer": {
+        "type": "string",
+        "pattern": "^(ann|rev|adj)_[A-Za-z0-9]{1,16}$"
+       },
+       "adjudicator": {
+        "type": "string",
+        "pattern": "^(ann|rev|adj)_[A-Za-z0-9]{1,16}$"
+       },
+       "reason": {
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       "resolution": {
+        "type": [
+         "string",
+         "null"
+        ]
+       }
+      }
+     }
+    }
+   }
+  },
+  "reviews": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "required": [
+     "annotation_version",
+     "reviewer",
+     "status",
+     "reviewed_at"
+    ],
+    "properties": {
+     "annotation_version": {
+      "type": "integer",
+      "minimum": 1
+     },
+     "reviewer": {
+      "type": "string",
+      "pattern": "^(ann|rev|adj)_[A-Za-z0-9]{1,16}$"
+     },
+     "status": {
+      "enum": [
+       "approved",
+       "changes_requested"
+      ]
+     },
+     "reviewed_at": {
+      "type": "string",
+      "format": "date-time"
+     },
+     "disagreement_reason": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "resolution": {
+      "type": [
+       "string",
+       "null"
+      ]
+     }
+    }
+   }
+  }
+ }
+}

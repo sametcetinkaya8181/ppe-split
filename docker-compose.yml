@@ -1,12 +1,157 @@
+# Proje adı sabit: klasör adı değişse de volume/container adları değişmez (ppe-split_pgdata).
+name: ppe-split
+
 services:
+  db:
+    # postgres:17 (17.11) digest ile sabit; güncelleme bilinçli yapılır (docs/SECURITY.md "Bağımlılıklar").
+    image: postgres:17@sha256:b8faeff7712663c2773a190181e1246e37e364b887611c04658c28b44e2408fe
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 2g
+    pids_limit: 512
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB eksik - kökteki .env.example dosyasını .env olarak kopyalayın}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER eksik - kökteki .env dosyasını kontrol edin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD eksik - kökteki .env dosyasını kontrol edin}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Port host'a AÇILMAZ; yalnızca compose ağı içinden (db:5432) erişilir.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  # Tek seferlik: rol ayrımı (least privilege). Süper kullanıcıyla çalışır; idempotenttir. Parolalar boşsa atlanır.
+  db-roles:
+    build: ./dashboard
+    # FAZ 02-A: üretimde sürüm etiketiyle sabitleyin (PPE_DASHBOARD_IMAGE=ppe-dashboard:<sürüm>, `up --no-build`);
+    # boşsa eski davranış: ppe-dashboard (= :latest). Üç servis AYNI imajı kullanmalıdır (migration = uygulama).
+    image: ${PPE_DASHBOARD_IMAGE:-ppe-dashboard}
+    command: ["python", "-m", "db.roles", "setup"]
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      ADMIN_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      PPE_APP_PASSWORD: ${PPE_APP_PASSWORD:-}
+      PPE_MIGRATOR_PASSWORD: ${PPE_MIGRATOR_PASSWORD:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  # Tek seferlik: şemayı Alembic ile head'e getirir (tablo sahibi ppe_migrator), uygulama yetkilerini tazeler, çıkar.
+  migrate:
+    build: ./dashboard
+    image: ${PPE_DASHBOARD_IMAGE:-ppe-dashboard}
+    command: ["sh", "-c", "alembic upgrade head && python -m db.roles grants"]
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      DATABASE_URL: ${MIGRATE_DATABASE_URL:-${DATABASE_URL:?DATABASE_URL eksik - kökteki .env dosyasını kontrol edin}}
+    depends_on:
+      db:
+        condition: service_healthy
+      db-roles:
+        condition: service_completed_successfully
+    restart: "no"
+
   dashboard:
     build: ./dashboard
-    image: ppe-dashboard
+    image: ${PPE_DASHBOARD_IMAGE:-ppe-dashboard}
     ports:
-      - "8000:8000"
+      # Varsayılan yalnız bu bilgisayar. LAN için bunu DEĞİŞTİRMEYİN: docs/LAN_DEPLOYMENT.md (TLS ters vekil).
+      - "${DASHBOARD_BIND:-127.0.0.1}:8000:8000"
     volumes:
       - ./data:/data
+    # Sertleştirme: ayrıcalıksız kullanıcı (Dockerfile), salt okunur kök dosya sistemi (yazma yalnız /data, /tmp),
+    # tüm Linux yetenekleri düşürülür, ayrıcalık yükseltme kapalı, kaynak sınırları.
+    read_only: true
+    tmpfs: ["/tmp:size=64m"]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 1g
+    cpus: 2
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     environment:
       DATA_DIR: /data
-      INGEST_TOKEN: ""        # doluysa dedektörde de aynı INGEST_TOKEN verilmeli
+      # Rol ayrımı kuruluysa ppe_app (SELECT/INSERT/UPDATE); eski kurulumda POSTGRES_USER.
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL eksik - kökteki .env dosyasını kontrol edin}
+      INGEST_TOKEN: ${INGEST_TOKEN:-}     # doluysa dedektörde de aynı INGEST_TOKEN verilmeli
+      INGEST_TOKEN_NEXT: ${INGEST_TOKEN_NEXT:-}   # yalnız token rotasyonu sırasında (docs/SECURITY.md)
+      ACTIVE_WINDOW_SEC: ${ACTIVE_WINDOW_SEC:-90}
+      SECURITY_PROFILE: ${SECURITY_PROFILE:-local}
+      SESSION_IDLE_MINUTES: ${SESSION_IDLE_MINUTES:-30}
+      SESSION_MAX_HOURS: ${SESSION_MAX_HOURS:-12}
+      OPS_METRICS: ${OPS_METRICS:-1}            # FAZ 9: /api/ops/metrics (yalnız admin); 0 = kapalı
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
+
+  # ---- Yalnızca testler (FAZ 01: ana `db` kümesinden TAMAMEN ayrı) ----
+  # Önerilen: python tools/reliability/isolated_dashboard_tests.py  (rastgele parola, otomatik temizlik)
+  # Alternatif: docker compose -p ppe-split-test --profile test run --rm tests
+  #             docker compose -p ppe-split-test --profile test rm -sf test-db   (yalnız geçici test kümesi)
+  # FAZ 02-A: `-p ppe-split-test` ZORUNLU tutun: proje adı verilmezse test container'ları üretim projesinin
+  # (ppe-split) içinde oluşur ve `docker compose down` gibi proje çapındaki komutlar üretim servislerini de etkiler.
+  # Geçici küme: volume YOK (tmpfs), port yayını YOK, yalnız internal `testnet` ağında; üretim kimlik bilgisi
+  # kullanılmaz. `cluster_name=ppe-ephemeral-test` işareti olmayan kümeye testler bağlanmayı REDDEDER
+  # (dashboard/tests/db_guard.py, FAIL-CLOSED).
+  test-db:
+    profiles: ["test"]
+    image: postgres:17@sha256:b8faeff7712663c2773a190181e1246e37e364b887611c04658c28b44e2408fe
+    command: ["postgres", "-c", "cluster_name=ppe-ephemeral-test", "-c", "fsync=off"]
+    tmpfs: ["/var/lib/postgresql/data"]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      POSTGRES_USER: ppe_ephemeral
+      POSTGRES_PASSWORD: ${TEST_DB_PASSWORD:-ephemeral-test-only}   # yalnız internal ağdaki geçici küme
+      POSTGRES_DB: postgres
+    networks: [testnet]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ppe_ephemeral -d postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    restart: "no"
+
+  tests:
+    profiles: ["test"]
+    build: ./dashboard
+    image: ppe-dashboard-test:dev        # ana `ppe-dashboard` etiketi testler için yeniden OLUŞTURULMAZ
+    user: root                           # yalnız geliştirici testleri: test bağımlılıklarını kurar
+    working_dir: /app
+    command: ["sh", "-c", "pip install -q --root-user-action=ignore --disable-pip-version-check -r requirements-dev.txt && pytest -q -p no:cacheprovider"]
+    volumes:
+      - ./dashboard:/app
+    # testnet: yalnız test-db (internal). testegress: pip için dışarı çıkış; ana `db`'nin ağına (default) BAĞLI DEĞİL.
+    networks: [testnet, testegress]
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      DATA_DIR: /tmp/ppe-test-data
+      ALLOWED_HOSTS: 127.0.0.1,localhost,::1,testserver
+      PASSWORD_HASH_PROFILE: test         # hızlı Argon2id parametreleri; yalnız local profilde izinli
+      TEST_DATABASE_URL: postgresql+psycopg://ppe_ephemeral:${TEST_DB_PASSWORD:-ephemeral-test-only}@test-db:5432/ppe_test
+    depends_on:
+      test-db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+
+networks:
+  testnet:
+    internal: true
+  testegress: {}

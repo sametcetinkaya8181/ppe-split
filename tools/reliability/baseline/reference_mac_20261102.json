@@ -1,0 +1,67 @@
+{
+ "schema": "ppe-baseline-reference/1",
+ "status": "HISTORICAL_UNVERIFIED",
+ "source": "Kullanıcının aktardığı geçmiş test raporu (Mac). Ham kanıt klasörü tools/reliability/output/20261102T124324Z_capture_accuracy/ bu makinede YOK; bu değerler bağımsız doğrulanmadı ve yalnız tarihsel referanstır.",
+ "run_id": "20261102T124324Z_capture_accuracy (Mac)",
+ "env": {
+  "device": "Apple MPS",
+  "gpu": null,
+  "torch": null,
+  "cuda": null,
+  "ultralytics": null,
+  "opencv": null,
+  "numpy": null,
+  "platform": "macOS (sürüm bilinmiyor)"
+ },
+ "model_sha256": null,
+ "settings": {
+  "vid_stride": 2,
+  "tracker": "bytetrack.yaml"
+ },
+ "videos": {
+  "V1": {
+   "sha256": null,
+   "file": "16533594_1920_1080_25fps.mp4 (dosya adı varsayımı)",
+   "note": "iki çalışan için altı takip kimliği",
+   "alarms": 0,
+   "track_ids": 6
+  },
+  "V2": {
+   "sha256": null,
+   "file": "5434223-hd_1920_1080_24fps.mp4 (dosya adı varsayımı)",
+   "note": "1 yanlış alarm (örtülen koyu baret); kenardaki çalışan yetersiz değerlendirildi",
+   "alarms": 1,
+   "alarm_items": [
+    "helmet"
+   ]
+  },
+  "V3": {
+   "sha256": null,
+   "file": "8965526-uhd_2160_3840_25fps.mp4 (dosya adı varsayımı)",
+   "note": "1 yanlış alarm (kırmızı iş makinesi kolu kişi sanıldı)",
+   "alarms": 1
+  }
+ },
+ "totals": {
+  "detector_events": 5,
+  "db_events": 5,
+  "lost": 0,
+  "duplicates": 0,
+  "extra": 0,
+  "violation_alarms": 2,
+  "alarms_false_by_human_review": 2,
+  "alarms_true": 0
+ },
+ "other_checks_reported_ok": [
+  "snapshot",
+  "incident yaşam döngüsü",
+  "rapor",
+  "outbox"
+ ],
+ "known_errors": {
+  "E-01": "PRESENT",
+  "E-02": "PRESENT",
+  "E-03": "PRESENT",
+  "E-04": "PRESENT"
+ }
+}

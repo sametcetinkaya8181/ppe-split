@@ -1,0 +1,98 @@
+{
+ "schema": "steelbench-baseline/1",
+ "run_id": "20261102T131913Z_steelbench",
+ "summary": {
+  "environment": {
+   "model_sha256": "6886ad2fc301cf992152d4b047307071cac940082ab071175c0ef498fe67ba43",
+   "device": "mps",
+   "torch": "2.15.0",
+   "ultralytics": "8.4.183",
+   "config_sha256": "c829bb3293a1ed3b81f1797c06d29e28a3d88fdd0e9f64136a297135d818c8ae"
+  },
+  "integrity": "PASS",
+  "alarms": [
+   {
+    "video": "V2",
+    "t": 4.8,
+    "violation": "missing_helmet",
+    "box": [
+     904,
+     121,
+     1492,
+     1070
+    ],
+    "classification": "KNOWN_FALSE_ALARM",
+    "known_error": "E-01"
+   },
+   {
+    "video": "V3",
+    "t": 9.0,
+    "violation": "missing_helmet",
+    "box": [
+     1053,
+     677,
+     1304,
+     1084
+    ],
+    "classification": "KNOWN_FALSE_ALARM",
+    "known_error": "E-02"
+   }
+  ],
+  "known_errors": {
+   "E-01": "REPRODUCED",
+   "E-02": "REPRODUCED",
+   "E-03": "REPRODUCED",
+   "E-04": "REPRODUCED"
+  },
+  "videos": {
+   "V1": {
+    "track_ids": 6,
+    "track_ids_ge10_frames": 5,
+    "system_coverage": 0.551,
+    "event_types": {},
+    "incidents": []
+   },
+   "V2": {
+    "track_ids": 3,
+    "track_ids_ge10_frames": 2,
+    "system_coverage": 0.3797,
+    "event_types": {
+     "start": 1,
+     "ongoing": 2,
+     "end": 1
+    },
+    "incidents": [
+     {
+      "start": 4.8,
+      "end": 14.7,
+      "closed_by": "end",
+      "missing": "Baretsiz"
+     }
+    ]
+   },
+   "V3": {
+    "track_ids": 4,
+    "track_ids_ge10_frames": 4,
+    "system_coverage": 0.783,
+    "event_types": {
+     "start": 1
+    },
+    "incidents": [
+     {
+      "start": 9.0,
+      "end": 12.6,
+      "closed_by": "run_end",
+      "missing": "Baretsiz"
+     }
+    ]
+   }
+  },
+  "metrics_status": {
+   "precision": "INSUFFICIENT_GROUND_TRUTH",
+   "recall": "NOT_MEASURABLE",
+   "false_alarm_rate_per_camera_hour": "INSUFFICIENT_GROUND_TRUTH",
+   "system_coverage": "MEASURED_SYSTEM_ONLY",
+   "ground_truth_coverage": "NOT_MEASURABLE"
+  }
+ }
+}

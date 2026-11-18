@@ -1,0 +1,20 @@
+# PPE Safety Monitor — LAN TLS ters vekil (Caddy 2). Tek giriş noktası: HTTPS (443), HTTP (80) -> HTTPS yönlendirme.
+# Ortam:
+#   PPE_SITE      Tarayıcının kullanacağı ad (ör. ppe.santiye.local). Dashboard ALLOWED_HOSTS ile AYNI olmalı.
+#   PPE_UPSTREAM  Dashboard adresi (compose içinde dashboard:8000).
+#   PPE_TLS       "internal" = Caddy'nin YEREL test CA'sı (yalnız deneme; tarayıcılar güvenmez).
+#                 Üretim: kurumun sertifikası -> "/certs/cert.pem /certs/key.pem" (dosyaları salt okunur bağlayın).
+# Caddy X-Forwarded-For/-Proto/-Host başlıklarını kendisi yazar (istemciden gelenleri ezer); WebSocket'i otomatik geçirir.
+{
+	admin off
+}
+
+{$PPE_SITE} {
+	tls {$PPE_TLS:internal}
+	reverse_proxy {$PPE_UPSTREAM:dashboard:8000}
+	header -Server
+	log {
+		output stdout
+		format console
+	}
+}

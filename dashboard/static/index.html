@@ -29,39 +29,54 @@
 
   header {
     background: var(--hivis); color: #17202a; padding: 10px 20px;
-    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    display: flex; align-items: center; justify-content: space-between; gap: 8px 16px; flex-wrap: wrap;
     border-bottom: 4px solid #17202a;
   }
   header h1 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: .2px; }
   #conn { font-size: 14px; display: flex; align-items: center; gap: 8px; }
+  .hdr-right { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; justify-content: flex-end; }
+  #userBox { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+  #userBox button { border-color: #17202a; color: #17202a; }
+  .login { max-width: 460px; margin: 40px auto 0; }
+  .login .filters label { flex: 1 1 100%; }
+  .login .filters input { width: 100%; }
   #conn i { width: 10px; height: 10px; border-radius: 50%; background: #17202a; display: inline-block; }
   #conn.live i { background: var(--ok); }
   #conn.err i { background: var(--bad); }
 
   main {
-    display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 16px;
+    display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 380px); gap: 16px;
     padding: 16px 20px; max-width: 1800px; margin: 0 auto;
   }
-  @media (max-width: 1000px) { main { grid-template-columns: 1fr; } }
+  @media (max-width: 1000px) { main { grid-template-columns: minmax(0, 1fr); } }
 
-  /* kamera ızgarası */
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 12px; }
+  /* kamera ızgarası (FAZ 10-A.7): en fazla bir kamera büyütülür; büyüyen kamera ilk sıraya ve tam satıra geçer, diğer
+     kartlar kendi sıralarını korur (boşluk kalmaz). Görüntü en-boy oranını korur (contain), kırpılmaz/esnemez. */
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 12px; align-items: start; }
   .hint { font-size: 12.5px; color: var(--ink-soft); margin: 0 0 8px; }
-  .stage { background: #000; position: relative; border: 3px solid transparent; transition: border-color .2s; cursor: pointer; }
-  .stage.wide { grid-column: 1 / -1; }
+  .stage { background: var(--panel); border: 3px solid var(--line); min-width: 0; display: flex; flex-direction: column; transition: border-color .2s; }
+  .stage.wide { grid-column: 1 / -1; order: -1; }
   .stage.alarm { border-color: var(--bad); }
+  .stage .cap { display: flex; align-items: center; gap: 8px; padding: 5px 6px 5px 10px; min-width: 0; }
+  .stage .ttl { flex: 1 1 auto; min-width: 0; }
+  .stage .cam-name, .stage .cam-state { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .stage .cam-name { font-size: 14px; font-weight: 700; }
+  .stage .cam-state { font-size: 12.5px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+  .stage .exp { flex: 0 0 auto; padding: 3px 9px; font-size: 12.5px; }
+  .stage .frame { position: relative; background: #0c0f12; cursor: zoom-in; }
+  .stage.wide .frame { cursor: zoom-out; }
   .stage img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: #0c0f12; }
-  .stage.wide img { max-height: 78vh; }
+  .stage.wide img { max-height: min(72vh, 1100px); }
   .stage.off img { opacity: .35; }
-  .stage .tag {
-    position: absolute; left: 0; top: 0; background: rgba(23,32,42,.85); color: #fff;
-    font-size: 13px; padding: 4px 10px; font-variant-numeric: tabular-nums; max-width: 100%;
-  }
   .stage .badge {
-    position: absolute; right: 0; bottom: 0; background: var(--bad); color: #fff;
+    position: absolute; right: 0; top: 0; background: var(--bad); color: #fff;
     font-size: 13px; font-weight: 700; padding: 4px 10px;
   }
   .stage .badge:empty { display: none; }
+  .stage .health { background: #2b343c; color: #fff; font-size: 12.5px; padding: 4px 10px; overflow-wrap: anywhere; }
+  .stage .health.warn { background: #8a5a00; }
+  .stage .health.down { background: var(--bad); font-weight: 700; }
+  .stage .health:empty { display: none; }
 
   .tally { display: flex; flex-wrap: wrap; gap: 0; margin-top: 12px; background: var(--panel); border: 1px solid var(--line); }
   .tally div { flex: 1 1 120px; padding: 10px 14px; border-right: 1px solid var(--line); }
@@ -85,18 +100,33 @@
 
   aside { min-width: 0; }
   #feed { max-height: calc(100vh - 150px); overflow-y: auto; margin: 0; padding: 0; list-style: none; }
-  #feed li { display: grid; grid-template-columns: 64px 1fr; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); border-left: 5px solid var(--bad); }
-  #feed li.end { border-left-color: var(--ok); }
+  /* uyarı kartı (FAZ 10-A.7): incident başına tek kart; başlangıç → sürüyor → bitiş aynı kartı günceller */
+  #feed li { padding: 10px 12px; border-bottom: 1px solid var(--line); border-left: 5px solid var(--bad); }
+  #feed li.closed { border-left-color: var(--ok); }
   #feed li.new { animation: flash 1.6s ease-out; }
   @keyframes flash { from { background: color-mix(in srgb, var(--bad) 25%, transparent); } to { background: transparent; } }
-  #feed img { width: 64px; height: 84px; object-fit: cover; background: #0c0f12; cursor: zoom-in; }
-  #feed .ph { width: 64px; height: 84px; background: var(--line); }
-  #feed strong { font-size: 15px; display: block; }
-  #feed small { color: var(--ink-soft); font-size: 12.5px; display: block; margin-top: 2px; }
-  #feed .live-line { color: var(--warn); }
+  .al-head { display: flex; gap: 8px; align-items: baseline; justify-content: space-between; }
+  .al-cam { font-weight: 700; font-size: 14.5px; min-width: 0; overflow-wrap: anywhere; }
+  .al-time { font-size: 12.5px; color: var(--ink-soft); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .al-body { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 10px; margin-top: 6px; }
+  .al-thumb { padding: 0; border: 0; width: 72px; height: 96px; background: #0c0f12; cursor: zoom-in; }
+  .al-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .al-ph { width: 72px; height: 96px; background: var(--line); color: var(--ink-soft); font-size: 11.5px; display: flex;
+           align-items: center; justify-content: center; text-align: center; padding: 4px; }
+  dl.al-kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 10px; margin: 0; font-size: 13px; }
+  dl.al-kv dt { color: var(--ink-soft); }
+  dl.al-kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+  .eq-bad { color: var(--bad); font-weight: 700; } .eq-ok { color: var(--ok); font-weight: 700; } .eq-unknown { color: var(--ink-soft); }
+  .al-live { color: var(--warn); font-size: 12.5px; margin-top: 4px; }
+  .al-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .al-actions button { font-size: 12.5px; padding: 4px 8px; }
+  .run-live { background: color-mix(in srgb, var(--series) 15%, transparent); border-left: 4px solid var(--series);
+              padding: 8px 12px; margin: 0 0 12px; font-size: 13.5px; }
+  @media (max-width: 1000px) { #feed { max-height: 70vh; } }
   button { font: inherit; font-size: 13px; padding: 5px 10px; background: transparent; color: var(--ink); border: 1px solid var(--ink); cursor: pointer; }
   button:hover { background: var(--hivis); color: #17202a; }
   button:focus-visible, img:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+  .dlg-x { position: absolute; top: 6px; right: 6px; background: var(--panel); }
   .head { display: flex; justify-content: space-between; align-items: center; padding-right: 10px; border-bottom: 1px solid var(--line); }
   .head h2 { border: 0; }
 
@@ -104,17 +134,100 @@
   dialog img { display: block; max-width: 90vw; max-height: 85vh; }
   dialog::backdrop { background: rgba(0,0,0,.7); }
   @media (prefers-reduced-motion: reduce) { #feed li.new { animation: none; } }
+
+  /* ---------- sekmeler ve geçmiş ekranları (FAZ 4) ---------- */
+  :root { --series: #2f6fd6; --muted-bg: #e6e9eb; }
+  @media (prefers-color-scheme: dark) { :root { --series: #79a8f2; --muted-bg: #2e353b; } }
+  [hidden] { display: none !important; }
+  .tabs { display: flex; gap: 0; background: var(--panel); border-bottom: 1px solid var(--line); padding: 0 20px; overflow-x: auto; }
+  .tabs button { border: 0; border-bottom: 4px solid transparent; padding: 11px 16px; font-size: 14px; white-space: nowrap; color: var(--ink-soft); }
+  .tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--ink); font-weight: 700; }
+  .tabs button:hover { background: var(--muted-bg); color: var(--ink); }
+  .page { padding: 16px 20px; max-width: 1800px; margin: 0 auto; }
+  .page > .box:first-child { margin-top: 0; }
+  .filters { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end; padding: 12px 14px; }
+  .filters label { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--ink-soft); }
+  .filters select, .filters input { font: inherit; font-size: 14px; padding: 5px 8px; min-width: 150px; background: var(--concrete); color: var(--ink); border: 1px solid var(--line); }
+  .filters .actions { display: flex; gap: 8px; }
+  button.primary { background: var(--ink); color: var(--panel); }
+  button.primary:hover { background: var(--hivis); color: #17202a; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; padding: 3px 4px 3px 10px; border: 1px solid var(--ink); }
+  .chip button { border: 0; padding: 0 6px; }
+  .status-line { font-size: 13.5px; color: var(--ink-soft); padding: 8px 14px; border-top: 1px solid var(--line); }
+  .status-line.err { color: var(--bad); }
+  .tscroll { overflow-x: auto; }
+  .tscroll table { min-width: 760px; }
+  td.num, th.num { text-align: right; }
+  .pill.closed { background: var(--ok); } .pill.active { background: var(--bad); }
+  .pill.stale, .pill.run_end { background: var(--warn); } .pill.orphan, .pill.unknown { background: #6b7580; }
+  .pill.running { background: var(--series); } .pill.finished { background: var(--ok); }
+  .pill.error { background: var(--bad); } .pill.interrupted { background: var(--warn); }
+  .pill.abandoned { background: #6b7580; } .pill.disconnected { background: #b45309; }
+  .cov-note { font-size: 13px; color: var(--ink-soft); margin: 6px 0 0; }
+  .legacy { font-style: italic; color: var(--warn); }
+  .why { display: block; font-size: 12px; color: var(--ink-soft); margin-top: 2px; }
+  .thumb { width: 44px; height: 56px; object-fit: cover; background: #0c0f12; display: block; cursor: zoom-in; }
+  .more { padding: 10px 14px; border-top: 1px solid var(--line); }
+  .note { font-size: 12.5px; color: var(--ink-soft); padding: 0 14px 10px; margin: 0; }
+  .tally.wrap div { flex: 1 1 150px; }
+  .tally .w b { color: var(--warn); }
+  .split { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 0 16px; }
+  @media (max-width: 1000px) { .split { grid-template-columns: 1fr; } }
+  .chart { position: relative; padding: 10px 14px 6px; }
+  .chart svg { display: block; width: 100%; height: 240px; }
+  .chart .grid line { stroke: var(--line); stroke-width: 1; }
+  .chart text { fill: var(--ink-soft); font-size: 11px; font-family: var(--font); font-variant-numeric: tabular-nums; }
+  .chart .bar { fill: var(--series); pointer-events: none; }   /* olayları altındaki .hit alanı alır */
+  .chart .hit { fill: transparent; cursor: default; }
+  .chart .hit:hover + .bar, .chart .bar.on { opacity: .75; }
+  .tip { position: absolute; pointer-events: none; background: var(--ink); color: var(--panel); font-size: 12.5px; padding: 6px 9px; white-space: nowrap; transform: translate(-50%, calc(-100% - 8px)); }
+  .hbar { height: 10px; background: var(--series); border-radius: 0 4px 4px 0; min-width: 2px; }
+  .hbar-cell { width: 28%; }
+  #sCams td, #sCams th { padding-left: 10px; padding-right: 10px; }
+  #sCams td:first-child { overflow-wrap: anywhere; }
+  details.tbl summary { cursor: pointer; font-size: 13px; padding: 8px 14px; color: var(--ink-soft); border-top: 1px solid var(--line); }
+  dialog.panel { background: var(--panel); color: var(--ink); max-width: min(960px, 94vw); width: 960px; max-height: 90vh; padding: 0; border: 1px solid var(--line); }
+  dialog.panel .dlg-head { position: sticky; top: 0; background: var(--panel); display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--line); padding-right: 10px; }
+  dialog.panel .dlg-body { padding: 12px 14px; }
+  dl.kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0 0 12px; font-size: 14px; }
+  dl.kv dt { color: var(--ink-soft); } dl.kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+  .detail-top { display: grid; grid-template-columns: 220px 1fr; gap: 16px; }
+  .detail-top img { width: 100%; max-height: 300px; object-fit: contain; background: #0c0f12; cursor: zoom-in; }
+  @media (max-width: 640px) { .detail-top { grid-template-columns: 1fr; } .page, main { padding: 12px 16px; } .filters select, .filters input { min-width: 0; width: 100%; } .filters label { flex: 1 1 140px; } }
 </style>
 </head>
 <body>
 <header>
-  <h1>Saha KKD İzleme: baret ve yelek</h1>
-  <div id="conn"><i></i><span id="connText">Bağlanıyor…</span></div>
+  <h1>Saha KKD İzleme</h1>
+  <div class="hdr-right">
+    <div id="conn"><i></i><span id="connText">Bağlanıyor…</span></div>
+    <div id="userBox" hidden><span id="userName"></span><button type="button" id="logout">Çıkış</button></div>
+  </div>
 </header>
 
-<main>
+<div class="page" id="loginView" hidden>
+  <div class="box login">
+    <h2>Giriş</h2>
+    <form id="loginForm" class="filters">
+      <label>Kullanıcı adı<input name="username" autocomplete="username" required maxlength="64"></label>
+      <label>Parola<input name="password" type="password" autocomplete="current-password" required maxlength="256"></label>
+      <div class="actions"><button type="submit" class="primary">Giriş yap</button></div>
+    </form>
+    <p class="note">Hesaplar yönetici tarafından açılır. Parolanızı unuttuysanız yöneticinize başvurun.</p>
+    <div class="status-line" id="loginStatus" aria-live="polite"></div>
+  </div>
+</div>
+
+<nav class="tabs" id="appTabs" role="tablist" aria-label="Ekranlar" hidden>
+  <button role="tab" id="tab-live" data-view="live" aria-controls="view-live" aria-selected="true">Canlı İzleme</button>
+  <button role="tab" id="tab-history" data-view="history" aria-controls="view-history" aria-selected="false">İhlal Geçmişi</button>
+  <button role="tab" id="tab-stats" data-view="stats" aria-controls="view-stats" aria-selected="false">İstatistikler</button>
+  <button role="tab" id="tab-runs" data-view="runs" aria-controls="view-runs" aria-selected="false">Kamera / Run Raporları</button>
+</nav>
+
+<main id="view-live" role="tabpanel" aria-labelledby="tab-live" hidden>
   <section>
-    <p class="hint">Bir kameraya tıklayınca tam genişliğe büyür, tekrar tıklayınca küçülür.</p>
+    <p class="hint">Bir kameranın görüntüsüne veya "Büyüt" düğmesine basınca kamera ilk sıraya geçip büyür; tekrar basınca küçülür.</p>
     <div class="grid" id="grid">
       <div class="empty" id="gridEmpty">Dedektör bağlanınca kameralar burada görünür.</div>
     </div>
@@ -133,7 +246,15 @@
       <div id="peopleWrap" class="scroll"></div>
     </div>
 
-    <div class="box">
+    <div class="box" id="covBox">
+      <h2>Analiz kapsamı (kamera bazlı)</h2>
+      <div id="covWrap" class="scroll"><div class="empty">Dedektör sağlık özeti gelince burada görünür.</div></div>
+      <p class="cov-note">Değerlendirilemeyen kişiler "Uygun" sayılmaz; sistem onlar hakkında baret/yelek kararı
+        vermemiştir. Saha için kabul edilebilir kapsam eşiği tanımlanmadı (İSG onayı gerekir). Track sayısı kişi
+        sayısı değildir; oranlar dedektör başlangıcından beridir.</p>
+    </div>
+
+    <div class="box" id="reportBox">
       <div class="head"><h2>Video özeti (kamera ve kişi bazlı)</h2><button id="loadReport">Raporu yükle</button></div>
       <div id="reportWrap" class="scroll"><div class="empty">Dedektör bir videoyu bitirince rapor oluşur.</div></div>
     </div>
@@ -148,50 +269,194 @@
   </aside>
 </main>
 
-<dialog id="dlg"><img id="dlgImg" alt="İhlal anı"></dialog>
+<div class="page" id="view-history" role="tabpanel" aria-labelledby="tab-history" hidden>
+  <div class="box">
+    <h2>İhlal geçmişi (kalıcı kayıt)</h2>
+    <form class="filters" id="hForm">
+      <label>Kamera<select name="camera_id" class="camSel"><option value="">Tüm kameralar</option></select></label>
+      <label>Başlangıç tarihi<input type="date" name="from"></label>
+      <label>Bitiş tarihi<input type="date" name="to"></label>
+      <label>Eksik ekipman<select name="equipment">
+        <option value="">Tümü</option><option value="helmet">Baret eksik</option><option value="vest">Yelek eksik</option>
+        <option value="both">İkisi birden</option><option value="helmet_only">Yalnız baret</option><option value="vest_only">Yalnız yelek</option>
+      </select></label>
+      <label>Durum<select name="status">
+        <option value="">Tümü</option><option value="active">Sürüyor</option><option value="closed">Kapandı</option>
+        <option value="stale">Kadrajdan çıktı</option><option value="run_end">Run bitiminde açıktı</option>
+        <option value="unknown">Belirsiz</option><option value="orphan">Başlangıçsız</option>
+      </select></label>
+      <div class="actions"><button type="submit" class="primary">Uygula</button><button type="button" id="hReset">Sıfırla</button></div>
+      <span class="chip" id="hRunChip" hidden><span></span><button type="button" aria-label="Run filtresini kaldır">×</button></span>
+    </form>
+    <p class="note">Her satır bir ihlaldir (başlangıç → sürüyor → bitiş olayları tek satırda).<span id="hNoteTrack"> İz ID, o run içindeki takip numarasıdır; gerçek kişi kimliği değildir.</span> Tarihler bu bilgisayarın saat dilimine göredir.</p>
+    <div class="tscroll" id="hTable"></div>
+    <div class="more" id="hMore" hidden><button type="button">Daha fazla yükle</button></div>
+    <div class="status-line" id="hStatus" aria-live="polite"></div>
+  </div>
+</div>
+
+<div class="page" id="view-stats" role="tabpanel" aria-labelledby="tab-stats" hidden>
+  <div class="box">
+    <h2>İstatistikler</h2>
+    <form class="filters" id="sForm">
+      <label>Kamera<select name="camera_id" class="camSel"><option value="">Tüm kameralar</option></select></label>
+      <label>Başlangıç tarihi<input type="date" name="from"></label>
+      <label>Bitiş tarihi<input type="date" name="to"></label>
+      <div class="actions"><button type="submit" class="primary">Uygula</button><button type="button" id="sReset">Son 30 gün</button></div>
+    </form>
+    <div class="status-line" id="sStatus" aria-live="polite"></div>
+  </div>
+  <div class="tally wrap" id="sTiles"></div>
+  <p class="note" style="padding:6px 0 0">İhlal sayıları tekil ihlallerdir (başlangıç olayı olanlar); "sürüyor" tekrarları sayıyı artırmaz.<span id="sNoteRaw"> Ham olay sayısı ayrıca gösterilir.</span></p>
+  <div class="split">
+    <div class="box">
+      <h2 id="sChartTitle">Günlük ihlal sayısı</h2>
+      <div class="chart" id="sChart"></div>
+      <details class="tbl"><summary>Tablo olarak göster</summary><div class="tscroll" id="sDailyTable"></div></details>
+    </div>
+    <div>
+      <div class="box"><h2>Kamera bazlı dağılım (kamera kimliğine göre)</h2><div id="sCams"></div></div>
+      <div class="box"><h2>Durum dağılımı</h2><div id="sStatusTbl"></div></div>
+    </div>
+  </div>
+</div>
+
+<div class="page" id="view-runs" role="tabpanel" aria-labelledby="tab-runs" hidden>
+  <div class="box">
+    <h2>Kayıtlı kameralar</h2>
+    <div class="tscroll" id="rCams"></div>
+  </div>
+  <div class="box">
+    <h2>Run geçmişi</h2>
+    <form class="filters" id="rForm">
+      <label>Kamera<select name="camera_id" class="camSel"><option value="">Tüm kameralar</option></select></label>
+      <label>Başlangıç tarihi<input type="date" name="from"></label>
+      <label>Bitiş tarihi<input type="date" name="to"></label>
+      <label>Durum<select name="status">
+        <option value="">Tümü</option><option value="running">Çalışıyor</option><option value="finished">Bitti</option>
+        <option value="interrupted">Durduruldu</option><option value="error">Hata</option>
+        <option value="abandoned">Yanıt vermeden kapandı</option>
+        <option value="disconnected">Bağlantı koptu</option>
+      </select></label>
+      <div class="actions"><button type="submit" class="primary">Uygula</button><button type="button" id="rReset">Sıfırla</button></div>
+    </form>
+    <div class="tscroll" id="rTable"></div>
+    <div class="more" id="rMore" hidden><button type="button">Daha fazla yükle</button></div>
+    <div class="status-line" id="rStatus" aria-live="polite"></div>
+  </div>
+</div>
+
+<dialog id="dlg" aria-label="İhlal görüntüsü"><button type="button" class="dlg-x" id="dlgClose">Kapat</button><img id="dlgImg" alt="İhlal anı"></dialog>
+<dialog id="detail" class="panel" aria-labelledby="detailTitle">
+  <div class="dlg-head"><h2 id="detailTitle">Detay</h2><button type="button" id="detailClose">Kapat</button></div>
+  <div class="dlg-body" id="detailBody"></div>
+</dialog>
 
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 let after = 0, total = 0, fails = 0;
-const openAlerts = new Map();   // "cam:pid" -> <li> (süren ihlal)
+const openAlerts = new Map();   // incident_id -> uyarı kartı (FAZ 10-A.7)
 const tiles = new Map();        // cam id -> tile
 const byIdx = new Map();        // WebSocket indeksi -> tile
 
 function fmtT(s) { const m = Math.floor(s / 60); return `${m}:${(s % 60).toFixed(0).padStart(2, "0")}`; }
 
-/* ---------- kamera karoları ---------- */
+/* ---------- kamera karoları ----------
+   FAZ 10-A.7: en fazla bir kamera büyütülür (seçim karo güncellemelerinde ve sayfa yenilemesinde korunur). Büyütme
+   yalnız CSS sınıfıdır: WebSocket bağlantısı, kare akışı ve /api/state yoklama sıklığı değişmez. */
+let EXPANDED = null;
+try { EXPANDED = sessionStorage.getItem("ppe.expanded"); } catch (e) { /* depolama kapalı: yalnız bellekte */ }
+function setExpanded(id) {
+  EXPANDED = id;
+  try { if (id) sessionStorage.setItem("ppe.expanded", id); else sessionStorage.removeItem("ppe.expanded"); }
+  catch (e) { /* depolama kapalı */ }
+  tiles.forEach((t, cid) => {
+    const on = cid === id;
+    t.el.classList.toggle("wide", on);
+    t.exp.setAttribute("aria-pressed", String(on));
+    t.exp.textContent = on ? "Küçült" : "Büyüt";
+  });
+  const t = id && tiles.get(id);
+  if (t) t.el.scrollIntoView({ block: "nearest" });
+}
 function ensureTile(c) {
   let t = tiles.get(c.id);
   if (t) return t;
   $("gridEmpty").style.display = "none";
   const el = document.createElement("div");
   el.className = "stage";
+  const cap = document.createElement("div"); cap.className = "cap";
+  const ttl = document.createElement("div"); ttl.className = "ttl";
+  const name = document.createElement("span"); name.className = "cam-name";
+  const state = document.createElement("span"); state.className = "cam-state";
+  const exp = document.createElement("button");
+  exp.type = "button"; exp.className = "exp"; exp.textContent = "Büyüt"; exp.setAttribute("aria-pressed", "false");
+  ttl.append(name, state); cap.append(ttl, exp);
+  const frame = document.createElement("div"); frame.className = "frame";
   const img = document.createElement("img");
-  img.alt = `${c.name} canlı video`;
-  const tag = document.createElement("div"); tag.className = "tag";
   const badge = document.createElement("div"); badge.className = "badge";
-  el.append(img, tag, badge);
-  el.onclick = () => el.classList.toggle("wide");
+  frame.append(img, badge);
+  const health = document.createElement("div"); health.className = "health"; health.setAttribute("role", "status");
+  el.append(cap, frame, health);
+  exp.onclick = () => setExpanded(EXPANDED === c.id ? null : c.id);
+  frame.onclick = exp.onclick;
   $("grid").append(el);
-  t = { el, img, tag, badge, url: null };
+  t = { el, img, name, state, exp, badge, health, url: null };
   tiles.set(c.id, t); byIdx.set(c.idx, t);
+  if (EXPANDED === c.id) setExpanded(c.id);
   return t;
+}
+
+/* FAZ 9: kamera izlenemiyorsa veya kişiler değerlendirilemiyorsa açıkça yazılır ("ihlal yok" ile karışmasın). */
+const WHY = { warmup: "gözlem birikiyor", too_small: "uzak/küçük", edge: "kadraj kenarı", low_conf: "düşük güven" };
+function camDown(c) {
+  const f = (c.meta.health && c.meta.health.flags) || [];
+  return c.meta.status === "waiting_for_detector" || f.includes("no_signal") || f.includes("camera_disconnected")
+    || f.includes("frozen") || f.includes("stalled");
+}
+function healthText(c) {
+  const h = c.meta.health, o = c.meta.outbox, f = (h && h.flags) || [];
+  if (c.meta.status === "waiting_for_detector") return ["down", "Kamera izlenemiyor: dedektörden görüntü gelmiyor"];
+  if (f.includes("no_signal")) return ["down", "Sinyal yok (boş kare) — bu kamera şu an izlenemiyor"];
+  if (f.includes("camera_disconnected")) return ["down", "Kamera bağlantısı koptu — yeniden bağlanılıyor"];
+  if (f.includes("frozen")) return ["down", "Görüntü donmuş olabilir — bu kamera güvenilir izlenemiyor"];
+  if (f.includes("stalled")) return ["down", "Kameradan kare gelmiyor (akış takıldı) — bu kamera izlenemiyor"];
+  const parts = [];
+  if (f.includes("lagging") && h.lag_sec != null) parts.push(`gecikme ${h.lag_sec.toFixed(1)} sn`);
+  const cov = h && h.coverage;
+  if (cov && cov.analyzing > 0) {
+    const why = Object.entries(cov.analyzing_by_reason || {}).filter(([, n]) => n > 0)
+      .map(([k, n]) => `${WHY[k] || k} ${n}`).join(", ");
+    parts.push(`${cov.analyzing} kişi değerlendirilemiyor${why ? " (" + why + ")" : ""}`);
+  }
+  if (o && o.warnings && o.warnings.length) parts.push(`olay kuyruğu: ${o.pending_count} bekleyen`);
+  return [parts.length ? "warn" : "", parts.join(" · ")];
 }
 
 function syncCam(c) {
   const t = ensureTile(c), m = c.meta, s = c.summary;
   const waiting = m.status === "waiting_for_detector";
-  t.tag.textContent = waiting ? `${c.name} · bekleniyor…`
-    : `${c.name} · video ${fmtT(s.t)} · ${m.width}×${m.height} · ${m.proc_fps} kare/sn`;
+  t.name.textContent = c.name; t.name.title = c.name;
+  t.img.alt = `${c.name} canlı video`;
+  t.exp.setAttribute("aria-label", `${c.name}: ${t.exp.textContent}`);
+  t.state.textContent = waiting ? "Dedektör bekleniyor…"
+    : m.status === "reconnecting" ? "Kamera bağlantısı yok"
+    : !TECH ? (m.status === "running" ? "Canlı izleniyor" : m.status === "finished" ? "Video bitti" : "")
+    : `video ${fmtT(s.t)} · ${m.width}×${m.height} · ${m.proc_fps} kare/sn`;
+  t.state.title = t.state.textContent;
   t.el.classList.toggle("alarm", s.viol > 0);
-  t.el.classList.toggle("off", waiting);
+  t.el.classList.toggle("off", camDown(c));
   t.badge.textContent = s.viol > 0 ? `${s.viol} İHLAL` : "";
+  const [cls, txt] = healthText(c);
+  t.health.className = "health" + (cls ? " " + cls : "");
+  t.health.textContent = txt;
 }
 
 /* ---------- tek WebSocket ile tüm kareler ---------- */
+let WS = null;
 function connectWS() {
-  const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
+  const ws = WS = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
   ws.binaryType = "arraybuffer";
   ws.onmessage = e => {
     const u8 = new Uint8Array(e.data);
@@ -202,66 +467,150 @@ function connectWS() {
     t.img.src = url; t.url = url;
     if (old) setTimeout(() => URL.revokeObjectURL(old), 1000);
   };
-  ws.onclose = () => setTimeout(connectWS, 1000);
+  ws.onclose = () => { if (WS === ws && liveTimer) setTimeout(connectWS, 1000); };   // çıkışta yeniden bağlanma
 }
 
-/* ---------- uyarılar ---------- */
+/* ---------- uyarılar (FAZ 10-A.7) ----------
+   Kart = incident (kararlı incident_id): başlangıç kartı açar, "sürüyor" ve bitiş aynı kartı günceller. Aynı olay
+   (event_id) iki kez işlenmez. Fotoğraf yalnız sunucunun BU olaya verdiği snapshot URL'idir; run raporu ve ihlal
+   detayı geçmiş ekranlarıyla aynı API ve aynı çizim fonksiyonlarıyla (showRun/showIncident) açılır. Her değer
+   textContent ile yazılır. */
+const MAX_FEED = 300;                    // sunucudaki MAX_ALERTS ile aynı
+const seenEvents = new Set();
+const shortId = id => (id ? String(id).slice(0, 8) : "–");
+function equip(a, key) {                 // missing_* yoksa uydurulmaz: belirsiz
+  const f = a["missing_" + key];
+  if (typeof f !== "boolean") return ["eq-unknown", "Belirsiz"];
+  return f ? ["eq-bad", "Eksik"] : ["eq-ok", "Uygun"];
+}
+function alertThumb(a) {
+  if (a.snapshot && SNAP_RE.test(a.snapshot)) {
+    const who = a.pid != null ? ` iz ${a.pid}` : "";       // takip no yalnız admin'e gelir
+    const b = el("button", { type: "button", class: "al-thumb",
+                             "aria-label": `${a.cam_name}${who} ihlal görüntüsünü büyüt` });
+    const img = el("img", { alt: `${a.cam_name}${who} ihlal anı`, loading: "lazy" });
+    img.src = a.snapshot;
+    img.onerror = () => b.replaceWith(el("div", { class: "al-ph", text: "Görüntü yüklenemedi" }));
+    b.append(img);
+    b.onclick = () => zoom(a.snapshot);
+    return b;
+  }
+  return el("div", { class: "al-ph", text: a.type === "start" ? "Görüntü kaydedilmedi" : "Görüntü: ihlal detayında" });
+}
+function alertCard(a) {
+  const c = { li: el("li", null), cam: el("span", { class: "al-cam" }), time: el("span", { class: "al-time" }),
+              kv: el("dl", { class: "al-kv" }), live: el("div", { class: "al-live", hidden: true }),
+              thumb: alertThumb(a), first: a };
+  const detail = el("button", { type: "button", text: "İhlal detayı" });
+  detail.onclick = () => showIncident(a.incident_id);
+  const run = el("button", { type: "button", text: "Run raporunu görüntüle" });
+  run.onclick = () => showRun(a.run_id);
+  if (!a.incident_id) detail.disabled = true;
+  if (!a.run_id) run.disabled = true;
+  c.li.append(el("div", { class: "al-head" }, c.cam, c.time),
+              el("div", { class: "al-body" }, c.thumb, el("div", null, c.kv, c.live)),
+              el("div", { class: "al-actions" }, detail, TECH ? run : null));   // run raporu yalnız admin
+  return c;
+}
+function fillCard(c, a) {
+  const f = c.first, closed = a.type === "end";
+  c.li.classList.toggle("closed", closed);
+  c.cam.textContent = a.cam_name; c.cam.title = a.camera_id || a.cam;
+  c.time.textContent = f.type === "start" ? f.wall : a.wall;
+  const missing = closed ? (f.type === "end" ? "–" : f.missing) : a.missing;
+  const state = k => closed && f.type === "start" && f["missing_" + k] === true ? ["eq-ok", "Eksikti → tekrar görüldü"]
+    : equip(closed ? { ["missing_" + k]: false } : a, k);
+  const [hc, ht] = state("helmet"), [vc, vt] = state("vest");
+  const rows = [
+    ["İhlal", missing || "–"],
+    ["Baret", el("span", { class: hc, text: ht })],
+    ["Yelek", el("span", { class: vc, text: vt })],
+    ["Durum", closed ? `Bitti · ${a.wall} · ekipman tekrar görüldü` : "Sürüyor"]];
+  if (TECH) rows.push(                                 // teknik ayrıntılar yalnız admin (sunucu da göndermez)
+    ["Geçici iz", `#${a.pid} (run içi takip no; kişi kimliği değildir)`],
+    ["Video", f.type === "start" ? `${fmtT(f.t)}${closed ? " → " + fmtT(a.t) : ""}` : fmtT(a.t)],
+    ["Incident", el("span", { text: shortId(a.incident_id), title: a.incident_id || "" })],
+    ["Run", el("span", { text: shortId(a.run_id), title: a.run_id || "" })]);
+  if (SCORES && a.helmet_rate != null && a.vest_rate != null)
+    rows.push(["Model oranı", `baret %${a.helmet_rate} · yelek %${a.vest_rate}`]);
+  c.kv.replaceChildren(...rows.flatMap(([k, v]) => [el("dt", { text: k }), el("dd", null, v)]));
+}
 function addAlert(a, animate) {
-  const feed = $("feed"), key = `${a.cam}:${a.pid}`;
+  if (a.event_id) {
+    if (seenEvents.has(a.event_id)) return;
+    seenEvents.add(a.event_id);
+    if (seenEvents.size > 4 * MAX_FEED) seenEvents.delete(seenEvents.values().next().value);
+  }
+  const key = a.incident_id || (a.pid != null ? `${a.cam}:${a.pid}` : `ev:${a.event_id || a.id}`);
+  let c = openAlerts.get(key);
   if (a.type === "ongoing") {
-    const li = openAlerts.get(key);
-    if (li) li.querySelector(".live-line").textContent =
-      `Sürüyor · video ${fmtT(a.t)} · baret %${a.helmet_rate}, yelek %${a.vest_rate}`;
+    if (!c) return;                                    // kartı olmayan (temizlenmiş) incident için yeni kart açılmaz
+    fillCard(c, a);
+    c.live.hidden = false; c.live.textContent = `Son bildirim: ${a.wall}` + (a.t != null ? ` · video ${fmtT(a.t)}` : "");
     return;
   }
-  const li = document.createElement("li");
-  if (a.type === "end") li.className = "end";
-  if (animate) li.classList.add("new");
-  const thumb = a.snapshot
-    ? Object.assign(document.createElement("img"), { src: a.snapshot, alt: `${a.cam_name} ID ${a.pid} ihlal anı`, tabIndex: 0 })
-    : Object.assign(document.createElement("div"), { className: "ph" });
-  if (a.snapshot) {
-    const open = () => { $("dlgImg").src = a.snapshot; $("dlg").showModal(); };
-    thumb.onclick = open; thumb.onkeydown = e => { if (e.key === "Enter") open(); };
+  if (!c) {
+    c = alertCard(a);
+    openAlerts.set(key, c);
+    $("feed").prepend(c.li);
+    while ($("feed").children.length > MAX_FEED) {
+      const old = $("feed").lastElementChild;
+      for (const [k, v] of openAlerts) if (v.li === old) openAlerts.delete(k);
+      old.remove();
+    }
   }
-  const body = document.createElement("div");
-  const title = document.createElement("strong");
-  const sub = document.createElement("small");
-  const live = document.createElement("small");
-  live.className = "live-line";
-  if (a.type === "start") {
-    title.textContent = `${a.cam_name} · ID ${a.pid}: ${a.missing}`;
-    sub.textContent = `${a.wall} · video ${fmtT(a.t)} · baret %${a.helmet_rate}, yelek %${a.vest_rate}`;
-    openAlerts.set(key, li); total++;
-    $("nTotal").textContent = total;
-  } else {
-    title.textContent = `${a.cam_name} · ID ${a.pid}: ihlal bitti`;
-    sub.textContent = `${a.wall} · video ${fmtT(a.t)} · ekipman tekrar görüldü`;
-    openAlerts.delete(key);
-  }
-  body.append(title, sub, live);
-  li.append(thumb, body);
-  feed.prepend(li);
+  if (a.type === "start") { total++; $("nTotal").textContent = total; }
+  if (animate) { c.li.classList.remove("new"); void c.li.offsetWidth; c.li.classList.add("new"); }
+  fillCard(c, a);
+  if (a.type === "end") c.live.hidden = true;
   $("feedEmpty").style.display = "none";
 }
 
-function clearFeed() { $("feed").innerHTML = ""; $("feedEmpty").style.display = ""; openAlerts.clear(); }
+function clearFeed() {
+  $("feed").replaceChildren(); $("feedEmpty").style.display = ""; openAlerts.clear(); seenEvents.clear();
+}
 
+/* FAZ 10-A.7: model oranı (%) sütunları yalnız admin oturumunda (SCORES) ve sunucu alanı gerçekten gönderdiyse çizilir;
+   sunucu admin dışı role bu alanları hiç göndermez (gizleme yalnız arayüzde değildir). */
+const PERSON_STATUS = { UYGUN: "Uygun", IHLAL: "İhlal", ANALIZ: "Analiz" };
+const pct = v => (v == null ? "–" : `%${v}`);
 function renderPeople(cams) {
-  const w = $("peopleWrap");
-  const rows = cams.flatMap(c => c.people.map(p =>
-    `<tr><td>${esc(c.name)}</td><td>ID ${p.pid}</td>` +
-    `<td><span class="pill ${p.status}">${{ UYGUN: "Uygun", IHLAL: "İhlal", ANALIZ: "Analiz" }[p.status]}</span></td>` +
-    `<td>%${p.helmet}</td><td>%${p.vest}</td></tr>`)).join("");
-  w.innerHTML = rows
-    ? `<table><thead><tr><th>Kamera</th><th>Kişi</th><th>Durum</th><th>Baret görülme</th><th>Yelek görülme</th></tr></thead><tbody>${rows}</tbody></table>`
-    : '<div class="empty">Şu an hiçbir kadrajda kimse yok.</div>';
+  const rows = cams.flatMap(c => c.people.map(p => el("tr", null, el("td", { text: c.name }), el("td", { text: `ID ${p.pid}` }),
+    el("td", null, pill(PERSON_STATUS[p.status] ? p.status : "ANALIZ", PERSON_STATUS[p.status] || "–")),
+    SCORES ? [el("td", { text: pct(p.helmet) }), el("td", { text: pct(p.vest) })] : null)));
+  $("peopleWrap").replaceChildren(rows.length
+    ? table(["Kamera", "Kişi", "Durum", ...(SCORES ? ["Baret görülme (model %)", "Yelek görülme (model %)"] : [])], rows)
+    : el("div", { class: "empty", text: "Şu an hiçbir kadrajda kimse yok." }));
+}
+
+/* ---------- FAZ 10-A: analiz kapsamı (yalnız gösterim; PPE kararı değişmez) ---------- */
+function renderCoverage(cams) {
+  const pct = (a, b) => b ? `%${(100 * a / b).toFixed(1)}` : "–";
+  const rows = cams.filter(c => c.meta.health && c.meta.health.coverage).map(c => {
+    const v = c.meta.health.coverage, tf = v.track_frames || 0, un = v.track_frames_unevaluated || 0;
+    const why = Object.entries(v.unevaluated_by_reason || {}).filter(([, n]) => n > 0)
+      .map(([k, n]) => `${WHY[k] || k} ${pct(n, tf)}`).join(", ");
+    const longTxt = v.open_unevaluated_long ? `${v.open_unevaluated_long} kişi (en uzun ${v.open_unevaluated_max_sec} sn)` : "yok";
+    return `<tr><td>${esc(c.name)}</td><td>${pct(tf - un, tf)}</td><td>${pct(un, tf)}${why ? " (" + esc(why) + ")" : ""}</td>` +
+      `<td>${v.analyzing ?? 0}</td><td>${esc(longTxt)}</td>` +
+      `<td>${v.tracks_closed_never_evaluated ?? 0} / ${v.tracks_seen ?? 0}${v.never_evaluated_max_sec ? " (en uzun " + v.never_evaluated_max_sec + " sn)" : ""}</td></tr>`;
+  }).join("");
+  $("covWrap").innerHTML = rows
+    ? `<table><thead><tr><th>Kamera</th><th>Kapıdan geçen track-kare</th><th>Değerlendirilemeyen track-kare (neden)</th>` +
+      `<th>Şu an değerlendirilemeyen kişi</th><th>Uzun süredir (≥10 sn) değerlendirilemeyen</th>` +
+      `<th>Hiç karar almadan kaybolan track / tüm track</th></tr></thead><tbody>${rows}</tbody></table>`
+    : '<div class="empty">Dedektör sağlık özeti gelince burada görünür.</div>';
 }
 
 /* ---------- durum döngüsü ---------- */
 async function tick() {
+  const gen = SESSION;
   try {
-    const d = await (await fetch(`/api/state?after=${after}`)).json();
+    const res = await fetch(`/api/state?after=${after}`);
+    if (gen !== SESSION) return;                       // oturum bu arada değişti: eski yanıt yazılmaz
+    if (res.status === 401) { showLogin("Oturum sona erdi; tekrar giriş yapın."); return; }
+    const d = await res.json();
+    if (gen !== SESSION) return;
     fails = 0;
     d.cameras.forEach(syncCam);
     const t = d.totals;
@@ -272,14 +621,19 @@ async function tick() {
     const running = d.cameras.filter(c => c.meta.status === "running").length;
     const c = $("conn");
     let cls = "", txt;
-    if (!d.cameras.length) { txt = "Dedektör bağlı değil (PC'de detector.py çalıştır)"; cls = "err"; }
-    else if (running) { txt = `Canlı · ${running}/${d.cameras.length} kamera`; cls = "live"; }
+    if (!d.cameras.length) { txt = "Dedektör bağlı değil"; cls = "err"; }
+    else if (running) {
+      const down = d.cameras.filter(camDown).length;
+      txt = "Dedektör bağlı" + (down ? ` · ${down} kamera İZLENEMİYOR` : "");
+      cls = down ? "err" : "live";
+    }
     else if (d.cameras.every(x => x.meta.status === "finished")) { txt = "Videolar bitti"; }
     else if (d.cameras.some(x => x.meta.status === "error")) { txt = "Hata: " + d.cameras.find(x => x.meta.status === "error").meta.error; cls = "err"; }
     else { txt = "Dedektör bekleniyor…"; cls = "err"; }
     c.className = cls; $("connText").textContent = txt;
 
     renderPeople(d.cameras);
+    renderCoverage(d.cameras);
 
     // dashboard yeniden başladıysa uyarı sayacı sıfırlanır
     if (d.last_alert_id < after) { after = 0; total = 0; $("nTotal").textContent = 0; clearFeed(); }
@@ -293,16 +647,545 @@ async function tick() {
 $("clear").onclick = clearFeed;
 $("dlg").onclick = () => $("dlg").close();
 $("loadReport").onclick = async () => {
-  const rep = await (await fetch("/api/report")).json();
   const w = $("reportWrap");
-  if (!rep.length) { w.innerHTML = '<div class="empty">Rapor henüz hazır değil; dedektör bir videoyu bitirince oluşur.</div>'; return; }
-  w.innerHTML = '<table><thead><tr><th>Kamera</th><th>Kişi</th><th>Aralık</th><th>Gözlem</th><th>Baret</th><th>Yelek</th><th>Sonuç</th></tr></thead><tbody>' +
-    rep.map(p => `<tr><td>${esc(p.cam_name)}</td><td>ID ${p.pid}</td><td>${p.first}–${p.last} sn</td><td>${p.n}</td><td>%${p.helmet}</td><td>%${p.vest}</td>` +
-      `<td><span class="pill ${p.violation ? "IHLAL" : "UYGUN"}">${p.violation ? "İhlal yaşandı" : "Uygun"}</span></td></tr>`).join("") + "</tbody></table>";
+  let rep;
+  try { rep = await getJSON("/api/report"); }
+  catch (e) { w.replaceChildren(el("div", { class: "empty", text: e.message })); return; }
+  if (!rep.length) { w.replaceChildren(el("div", { class: "empty", text: "Rapor henüz hazır değil; dedektör bir videoyu bitirince oluşur." })); return; }
+  w.replaceChildren(table(["Kamera", "Kişi", "Aralık", "Gözlem", ...(SCORES ? ["Baret (model %)", "Yelek (model %)"] : []), "Sonuç"],
+    rep.map(p => el("tr", null, el("td", { text: p.cam_name }), el("td", { text: `ID ${p.pid}` }),
+      el("td", { text: `${p.first}–${p.last} sn` }), el("td", { text: p.n }),
+      SCORES ? [el("td", { text: pct(p.helmet) }), el("td", { text: pct(p.vest) })] : null,
+      el("td", null, pill(p.violation ? "IHLAL" : "UYGUN", p.violation ? "İhlal yaşandı" : "Uygun"))))));
 };
 
-connectWS();
-tick(); setInterval(tick, 700);
+/* ---------- FAZ 4: geçmiş, istatistik ve run raporları ----------
+   Sunucudan gelen her değer textContent / setAttribute ile yazılır (HTML olarak yorumlanmaz).
+   Veriler yalnızca PostgreSQL geçmiş API'lerinden gelir; canlı izleme döngüsü (tick, WebSocket) etkilenmez. */
+function el(tag, props, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(props || {})) {
+    if (v == null || v === false) continue;
+    if (k === "text") n.textContent = v;
+    else if (k === "class") n.className = v;
+    else n.setAttribute(k, v === true ? "" : String(v));
+  }
+  for (const c of kids.flat()) if (c != null) n.append(c instanceof Node ? c : String(c));
+  return n;
+}
+const SVGNS = "http://www.w3.org/2000/svg";
+function sv(tag, attrs, text) {
+  const n = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) n.setAttribute(k, String(v));
+  if (text != null) n.textContent = text;
+  return n;
+}
+
+const STATUS = { closed: "Kapandı", active: "Sürüyor", stale: "Kadrajdan çıktı", run_end: "Run bitiminde açıktı",
+                 orphan: "Başlangıçsız", unknown: "Belirsiz" };
+const REASON = {
+  end_event: "Bitiş olayı kaydedildi", recent_activity: "Dedektör canlı, olaylar güncel",
+  heartbeat_lost: "Dedektörden canlılık sinyali gelmiyor", no_recent_event: "Bu kişiden yeni olay yok; run raporu bekleniyor",
+  stale: "Kişi bir süre görülmedi, takip bırakıldı", run_end: "Video/run bittiğinde ihlal sürüyordu",
+  superseded: "Aynı iz için yeni ihlal başladı", missing_metadata: "Run raporunda kapanış bilgisi yok",
+  metadata_overflow: "Run raporundaki liste taşmış; kapanış nedeni bilinmiyor", not_reported: "Run raporunda yer almıyor",
+  no_start_event: "Başlangıç olayı kaydedilmemiş",
+  run_abandoned: "Run rapor göndermeden kapandı (uzlaştırıldı)" };
+const RUN_STATUS = { running: "Çalışıyor", finished: "Bitti", interrupted: "Durduruldu", error: "Hata",
+                     abandoned: "Yanıt vermeden kapandı", disconnected: "Bağlantı koptu" };
+const END_REASON = { eof: "dosya sonu", user_stop: "kullanıcı durdurdu", source_lost: "kaynak bağlantısı koptu",
+                     source_lost_after_stall: "görüntü dondu/kayboldu, sonra koptu", exception: "dedektör hatası" };
+const EVENT_TYPE = { start: "Başladı", ongoing: "Sürüyor", end: "Bitti" };
+const SNAP_RE = /^\/snapshots\/alert_[0-9a-f-]{36}\.jpg$/;
+const TZ = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch (e) { return "UTC"; } })();
+
+const fmtDT = iso => iso ? new Date(iso).toLocaleString("tr-TR", { day: "2-digit", month: "2-digit", year: "numeric",
+  hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "–";
+const fmtN = n => Number(n || 0).toLocaleString("tr-TR");
+function fmtDur(sec) {
+  if (sec == null) return "–";
+  const s = Math.round(sec);
+  return s < 60 ? `${s} sn` : `${Math.floor(s / 60)} dk ${String(s % 60).padStart(2, "0")} sn`;
+}
+function fmtDay(day, short) { const [y, m, d] = day.split("-"); return short ? `${d}.${m}` : `${d}.${m}.${y}`; }
+function localDay(dt) { const p = n => String(n).padStart(2, "0"); return `${dt.getFullYear()}-${p(dt.getMonth() + 1)}-${p(dt.getDate())}`; }
+// tarih kutusu yerel gündür; API'ye UTC ISO gider. Bitiş günü dahildir (ertesi gün 00:00 hariç).
+function dayStartISO(v, plusDays = 0) {
+  if (!v) return null;
+  const [y, m, d] = v.split("-").map(Number);
+  return new Date(y, m - 1, d + plusDays).toISOString();
+}
+const rangeParams = form => ({ from: dayStartISO(form.elements.from.value), to: dayStartISO(form.elements.to.value, 1) });
+
+class ApiError extends Error { constructor(msg, status) { super(msg); this.status = status; } }
+async function getJSON(path, params) {
+  const q = new URLSearchParams(), gen = SESSION;
+  for (const [k, v] of Object.entries(params || {})) if (v != null && v !== "") q.append(k, v);
+  const r = await fetch(path + (String(q) ? "?" + q : ""));
+  if (gen !== SESSION) throw new ApiError("", 0);       // önceki oturumun yanıtı: sessizce atılır
+  if (r.status === 401) {
+    showLogin("Oturum sona erdi; tekrar giriş yapın.");
+    throw new ApiError("Oturum gerekli.", 401);
+  }
+  if (r.status === 403) throw new ApiError("Bu ekran için yetkiniz yok.", 403);
+  if (!r.ok) {
+    let msg = r.status === 503 ? "Veritabanına şu an ulaşılamıyor; birazdan tekrar deneyin." : `İstek başarısız (HTTP ${r.status}).`;
+    if (r.status === 422) {
+      try {
+        const e = (await r.json()).detail;
+        if (Array.isArray(e) && e[0]) msg = `Geçersiz filtre: ${e[0].msg}`;
+      } catch (e) { /* gövde JSON değil */ }
+    }
+    throw new ApiError(msg, r.status);
+  }
+  const body = await r.json();
+  if (gen !== SESSION) throw new ApiError("", 0);
+  return body;
+}
+
+function setStatus(id, msg, err) { const s = $(id); s.textContent = msg || ""; s.classList.toggle("err", !!err); }
+const pill = (cls, label) => el("span", { class: `pill ${cls}`, text: label });
+const statusCell = (st, reason) => el("td", null, pill(st, STATUS[st] || st), el("span", { class: "why", text: REASON[reason] || "" }));
+const th = h => el("th", typeof h === "string" ? { text: h } : h);
+const table = (heads, rows) => el("table", null, el("thead", null, el("tr", null, heads.map(th))), el("tbody", null, rows));
+const kv = list => el("dl", { class: "kv" }, list.filter(Boolean).flatMap(([k, v]) => [el("dt", { text: k }), el("dd", null, v)]));
+
+const LEGACY = "Eski kayıt: kaynak doğrulanamadı";
+// Geçmiş kayıt run'ın kendi (donmuş) etiketiyle gösterilir; yoksa kameranın bugünkü adı geçmişe yazılmaz.
+const srcName = x => x.source_verified ? x.camera_name : LEGACY;
+function camCell(x) {
+  return el("td", null, el("span", { class: x.source_verified ? null : "legacy", text: srcName(x) }),
+    el("span", { class: "why", text: x.camera_id + (x.source_ref ? ` · ${x.source_ref}` : "") }));
+}
+/* Modal: açan öğe hatırlanır, kapanınca (Escape, Kapat, arka plan) odak ona döner. */
+function openModal(d) { if (d.open) return; d._opener = document.activeElement; d.showModal(); }
+for (const id of ["dlg", "detail"]) $(id).addEventListener("close", () => {
+  const o = $(id)._opener; $(id)._opener = null;
+  if (o && o.isConnected && typeof o.focus === "function") o.focus();
+});
+function zoom(url) { if (!SNAP_RE.test(url)) return; $("dlgImg").src = url; openModal($("dlg")); $("dlgClose").focus(); }
+/* Detay istekleri: aynı yol kısa sürede tekrar istenirse tek istek (tekrarlanan tıklamalar); çıkışta silinir.
+   DETAIL_SEQ: geç gelen eski yanıt, sonradan açılan başka detayın yerine yazılmaz. */
+const DETAIL_CACHE = new Map();
+let DETAIL_SEQ = 0;
+function getCached(path, ttl = 5000) {
+  const hit = DETAIL_CACHE.get(path);
+  if (hit && Date.now() - hit.at < ttl) return hit.p;
+  const p = getJSON(path);
+  DETAIL_CACHE.set(path, { at: Date.now(), p });
+  p.catch(() => DETAIL_CACHE.delete(path));
+  return p;
+}
+function thumbOf(url, alt) {
+  if (!url || !SNAP_RE.test(url)) return el("span", { class: "why", text: "yok" });
+  const img = el("img", { class: "thumb", alt, loading: "lazy", tabindex: 0 });
+  img.src = url;
+  img.onclick = () => zoom(url);
+  img.onkeydown = e => { if (e.key === "Enter") zoom(url); };
+  return img;
+}
+function openDetail(title, ...nodes) {
+  $("detailTitle").textContent = title;
+  $("detailBody").replaceChildren(...nodes.filter(n => n != null));   // null düğüm "null" metni olarak yazılmasın
+  openModal($("detail"));
+}
+
+async function loadCameras() {
+  const cams = await getJSON("/api/history/cameras");
+  document.querySelectorAll(".camSel").forEach(sel => {
+    const cur = sel.value;
+    sel.replaceChildren(el("option", { value: "", text: "Tüm kameralar" }),
+      ...cams.map(c => el("option", { value: c.id, text: c.name === c.id ? c.id : `${c.name} (${c.id})` })));
+    sel.value = cams.some(c => c.id === cur) ? cur : "";
+  });
+  return cams;
+}
+
+/* --- İhlal geçmişi --- */
+const H = { cursor: null, run: null, busy: false };
+function incidentRow(i) {
+  const btn = el("button", { type: "button", text: "Detay" });
+  btn.onclick = () => showIncident(i.incident_id);
+  return el("tr", null,
+    el("td", { text: fmtDT(i.started_at) }), camCell(i), TECH ? el("td", { text: `#${i.track_id}` }) : null,
+    el("td", { text: i.missing || "–" }), statusCell(i.status, i.status_reason),
+    el("td", { text: i.status === "active" ? "sürüyor" : fmtDur(i.duration_sec) }),
+    TECH ? el("td", { class: "num", text: fmtN(i.event_count) }) : null,
+    el("td", null, i.snapshot_restricted ? el("span", { class: "why", text: "yetki gerekli" })
+      : thumbOf(i.snapshot, `${i.camera_id}${TECH ? ` iz ${i.track_id}` : ""} ihlal anı`)), el("td", null, btn));
+}
+async function loadHistory(append) {
+  if (H.busy) return;
+  H.busy = true;
+  setStatus("hStatus", "Yükleniyor…");
+  const f = $("hForm").elements;
+  try {
+    const d = await getJSON("/api/history/incidents", { camera_id: f.camera_id.value, ...rangeParams($("hForm")),
+      equipment: f.equipment.value, status: f.status.value, run_id: H.run, limit: 50, cursor: append ? H.cursor : null });
+    let body = append ? $("hTable").querySelector("tbody") : null;
+    if (!body) {
+      const t = table(["Başlangıç", "Kamera", ...(TECH ? ["İz ID"] : []), "Eksik ekipman", "Durum", "Süre",
+                       ...(TECH ? [{ text: "Olay", class: "num" }] : []), "Görüntü", ""], []);
+      $("hTable").replaceChildren(d.total ? t : "");
+      body = t.tBodies[0];
+    }
+    d.items.forEach(i => body.append(incidentRow(i)));
+    H.cursor = d.next_cursor;
+    $("hMore").hidden = !d.next_cursor;
+    setStatus("hStatus", d.total ? `${fmtN(d.total)} ihlal bulundu · ${fmtN(body.rows.length)} gösteriliyor`
+                                 : "Bu filtrelere uyan ihlal kaydı yok.");
+  } catch (e) { setStatus("hStatus", e.message, true); }
+  finally { H.busy = false; }
+}
+async function showIncident(id) {
+  const my = ++DETAIL_SEQ;
+  openDetail("İhlal detayı", el("p", { class: "why", text: "Yükleniyor…" }));
+  const current = () => my === DETAIL_SEQ && $("detail").open;      // kapatıldıysa veya başka detay açıldıysa yazma
+  try {
+    const d = await getCached(`/api/history/incidents/${encodeURIComponent(id)}`);
+    if (!current()) return;
+    const pic = SNAP_RE.test(d.snapshot || "")
+      ? Object.assign(el("img", { alt: "İhlal başlangıç anı" }), { src: d.snapshot, onclick: () => zoom(d.snapshot) })
+      : el("div", { class: "empty", text: d.snapshot_restricted ? "Görüntüyü yalnız kullanıcı ve yönetici rolleri görebilir."
+        : d.snapshot_missing ? "Görüntü dosyası bulunamadı." : "Görüntü kaydı yok." });
+    const video = d.video_first_sec == null ? "–" : `${d.video_first_sec} – ${d.video_last_sec} sn`;
+    const info = kv([
+      ["Kamera (bu kayıttaki kaynak)", d.camera.name ?? LEGACY],
+      ["Kamera kimliği", d.camera.id + (d.camera.current_name && d.camera.current_name !== d.camera.name
+        ? ` · bugünkü adı: ${d.camera.current_name}` : "")],
+      d.source_ref ? ["Kaynak", `${d.source_ref}${d.source_kind ? ` (${d.source_kind})` : ""}`] : null,
+      TECH ? ["İz ID", `#${d.track_id} (bu run içindeki takip numarası; kişi kimliği değildir)`] : null,
+      ["Eksik ekipman", d.missing || "–"],
+      d.missing_at_start && d.missing_at_start !== d.missing ? ["Başlangıçta eksik", d.missing_at_start] : null,
+      ["Durum", el("span", null, pill(d.status, STATUS[d.status] || d.status), " ", REASON[d.status_reason] || "")],
+      ["Başlangıç", fmtDT(d.started_at)],
+      ["Bitiş", d.ended_at ? fmtDT(d.ended_at) : "Bitiş olayı yok"],
+      ["Süre", fmtDur(d.duration_sec)],
+      // Teknik ayrıntılar yalnız admin (TECH); sunucu diğer rollere bu alanları hiç göndermez.
+      TECH ? ["Video zamanı", video] : null,
+      TECH && d.unclosed ? ["Run raporunda", `${REASON[d.unclosed.reason] || d.unclosed.reason}` +
+                    (d.unclosed.video_time_sec != null ? ` · video ${d.unclosed.video_time_sec} sn` : "")] : null,
+      TECH && d.run ? ["Run", `${RUN_STATUS[d.run.status] || d.run.status} · döngü ${d.run.loop_no ?? "–"} · ${fmtDT(d.run.started_at)}`] : null,
+      TECH ? ["Olay kaydı", `${fmtN(d.event_count)} (sürüyor bildirimi: ${fmtN(d.ongoing_count)})`] : null]);
+    const rows = d.timeline.map(e => el("tr", null,
+      el("td", { text: fmtDT(e.occurred_at) }), el("td", { text: EVENT_TYPE[e.type] || e.type }),
+      TECH ? el("td", { class: "num", text: e.video_time_sec ?? "–" }) : null, el("td", { text: e.missing || "–" }),
+      SCORES ? [el("td", { class: "num", text: e.helmet_rate ?? "–" }), el("td", { class: "num", text: e.vest_rate ?? "–" })] : null));
+    openDetail("İhlal detayı", el("div", { class: "detail-top" }, pic, info),
+      el("h2", { text: "Olay zaman çizelgesi", style: "padding-left:0" }),
+      el("div", { class: "tscroll" }, table(["Zaman", "Olay", ...(TECH ? [{ text: "Video sn", class: "num" }] : []), "Eksik",
+        ...(SCORES ? [{ text: "Baret (model %)", class: "num" }, { text: "Yelek (model %)", class: "num" }] : [])], rows)),
+      d.timeline_truncated ? el("p", { class: "why", text: "Zaman çizelgesi kısaltıldı (ilk olaylar gösteriliyor)." }) : null);
+  } catch (e) { if (current()) openDetail("İhlal detayı", el("p", { class: "status-line err", text: e.message })); }
+}
+
+/* --- İstatistikler --- */
+let lastDaily = [];
+function niceStep(max) {
+  const raw = max / 4, p = 10 ** Math.floor(Math.log10(raw));
+  return Math.max(1, [1, 2, 5, 10].map(k => k * p).find(s => s >= raw));
+}
+function barPath(x, y, w, h) {
+  if (h <= 0) return "";
+  const r = Math.min(4, w / 2, h);
+  return `M${x},${y + h}V${y + r}Q${x},${y} ${x + r},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + h}Z`;
+}
+function drawChart(daily) {
+  lastDaily = daily;
+  const box = $("sChart");
+  if (!daily.length || daily.every(x => !x.verified)) {
+    box.replaceChildren(el("div", { class: "empty", text: "Bu aralıkta ihlal kaydı yok." }));
+    return;
+  }
+  const W = Math.max(box.clientWidth - 28, 260), Hh = 240, m = { l: 34, r: 6, t: 12, b: 24 };
+  const iw = W - m.l - m.r, ih = Hh - m.t - m.b;
+  const max = Math.max(...daily.map(x => x.verified)), step = niceStep(max), top = Math.ceil(max / step) * step;
+  const svg = sv("svg", { viewBox: `0 0 ${W} ${Hh}`, role: "img",
+                          "aria-label": `Günlük doğrulanmış ihlal sayısı, ${daily.length} gün, en yüksek ${max}` });
+  const grid = sv("g", { class: "grid" });
+  svg.append(grid);
+  for (let v = 0; v <= top; v += step) {
+    const y = m.t + ih - v / top * ih;
+    grid.append(sv("line", { x1: m.l, x2: W - m.r, y1: y, y2: y }));
+    svg.append(sv("text", { x: m.l - 6, y: y + 4, "text-anchor": "end" }, String(v)));
+  }
+  const slot = iw / daily.length, bw = Math.max(2, Math.min(28, slot - 2));
+  const every = Math.ceil(daily.length / Math.max(1, Math.floor(iw / 46)));
+  const tip = el("div", { class: "tip", hidden: true });
+  daily.forEach((x, i) => {
+    const cx = m.l + slot * i + slot / 2, h = x.verified / top * ih, y = m.t + ih - h;
+    const hit = sv("rect", { class: "hit", x: m.l + slot * i, y: m.t, width: slot, height: ih });
+    const bar = sv("path", { class: "bar", d: barPath(cx - bw / 2, y, bw, h) });
+    hit.onmouseenter = hit.onclick = () => {
+      tip.textContent = `${fmtDay(x.day)} · ${x.verified} ihlal (baret ${x.helmet}, yelek ${x.vest})`;
+      tip.hidden = false;
+      const half = tip.offsetWidth / 2;                     // kenardaki çubukta ipucu kutunun dışına taşmasın
+      tip.style.left = `${Math.min(Math.max(14 + cx, half + 4), box.clientWidth - half - 4)}px`;
+      tip.style.top = `${12 + Math.min(y, m.t + ih - 4)}px`;
+    };
+    hit.onmouseleave = () => { tip.hidden = true; };
+    svg.append(hit, bar);
+    if (i % every === 0) svg.append(sv("text", { x: cx, y: Hh - 6, "text-anchor": "middle" }, fmtDay(x.day, true)));
+  });
+  box.replaceChildren(svg, tip);
+}
+function renderStats(d) {
+  const inc = d.incidents, st = d.by_status;
+  const tiles = [["Doğrulanmış ihlal", inc.verified, "v"], ["Baret eksik", inc.helmet], ["Yelek eksik", inc.vest],
+                 ["İkisi birden", inc.both], ["Şu an süren", st.active, "v"], ["Belirsiz / başlangıçsız", st.unknown + st.orphan, "w"],
+                 ["Kapanan", st.closed, "o"], ...(TECH && d.events ? [["Ham olay kaydı", d.events.total]] : [])];
+  $("sTiles").replaceChildren(...tiles.map(([label, n, cls]) =>
+    el("div", { class: cls || null }, el("b", { text: fmtN(n) }), el("span", { text: label }))));
+  drawChart(d.daily);
+  $("sDailyTable").replaceChildren(table(["Gün", { text: "İhlal", class: "num" }, { text: "Baret eksik", class: "num" },
+    { text: "Yelek eksik", class: "num" }], d.daily.map(x => el("tr", null, el("td", { text: fmtDay(x.day) }),
+    el("td", { class: "num", text: x.verified }), el("td", { class: "num", text: x.helmet }), el("td", { class: "num", text: x.vest })))));
+  const maxCam = Math.max(1, ...d.by_camera.map(c => c.verified));
+  $("sCams").replaceChildren(d.by_camera.length ? table(["Kamera", "", { text: "İhlal", class: "num" },
+      { text: "Baret", class: "num" }, { text: "Yelek", class: "num" }, ...(TECH ? [{ text: "Olay", class: "num" }] : [])],
+    d.by_camera.map(c => el("tr", null, el("td", null, c.camera_id,
+        el("span", { class: "why", text: c.camera_name && c.camera_name !== c.camera_id ? `bugünkü adı: ${c.camera_name}` : "" })),
+      el("td", { class: "hbar-cell" }, el("div", { class: "hbar", style: `width:${(c.verified / maxCam * 100).toFixed(1)}%`,
+                                                   title: `${c.verified} ihlal` })),
+      el("td", { class: "num", text: fmtN(c.verified) }), el("td", { class: "num", text: fmtN(c.helmet) }),
+      el("td", { class: "num", text: fmtN(c.vest) }), TECH ? el("td", { class: "num", text: fmtN(c.events) }) : null)))
+    : el("div", { class: "empty", text: "Kayıt yok." }));
+  $("sStatusTbl").replaceChildren(table(["Durum", "Anlamı", { text: "Adet", class: "num" }],
+    Object.keys(STATUS).map(k => el("tr", null, el("td", null, pill(k, STATUS[k])),
+      el("td", { class: "why", text: { closed: "Başlangıç ve bitiş kayıtlı", active: "Dedektör canlı ve ihlal sürüyor",
+        stale: "Kişi kadrajdan çıktı, bitiş üretilmedi", run_end: "Video/run bittiğinde açıktı",
+        orphan: "Başlangıcı kaydedilmemiş olay", unknown: "Veri eksik veya kesin değil" }[k] }),
+      el("td", { class: "num", text: fmtN(st[k]) })))));
+}
+async function loadStats() {
+  setStatus("sStatus", "Yükleniyor…");
+  const f = $("sForm").elements;
+  const params = { camera_id: f.camera_id.value, ...rangeParams($("sForm")), tz: TZ };
+  try {
+    let d;
+    try { d = await getJSON("/api/history/summary", params); }
+    catch (e) {
+      if (!(e.status === 422 && TZ !== "UTC")) throw e;
+      d = await getJSON("/api/history/summary", { ...params, tz: "UTC" });   // tarayıcı saat dilimi DB'de yoksa
+    }
+    renderStats(d);
+    setStatus("sStatus", `Günler ${d.filters.tz} saat dilimine göre gruplanır. Toplam ${fmtN(d.incidents.incidents)} kayıt (başlangıçsızlar dahil).`);
+  } catch (e) { setStatus("sStatus", e.message, true); }
+}
+function statsDefaultRange() {
+  const now = new Date();
+  $("sForm").elements.to.value = localDay(now);
+  $("sForm").elements.from.value = localDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29));
+}
+
+/* --- Kamera / run raporları --- */
+const R = { cursor: null, busy: false };
+function renderCameras(cams) {
+  $("rCams").replaceChildren(cams.length ? table(["Kamera", "Kaynak türü", { text: "Run", class: "num" }, "Şu an",
+      { text: "İhlal kaydı", class: "num" }, { text: "Olay", class: "num" }, "Son görülme"],
+    cams.map(c => el("tr", null, el("td", { text: c.name === c.id ? c.id : `${c.name} (${c.id})` }),
+      el("td", { text: c.source_kind || "–" }), el("td", { class: "num", text: fmtN(c.run_count) }),
+      el("td", null, c.live_runs ? pill("running", "Canlı") : el("span", { class: "why", text: "kapalı" })),
+      el("td", { class: "num", text: fmtN(c.incident_count) }), el("td", { class: "num", text: fmtN(c.event_count) }),
+      el("td", { text: fmtDT(c.last_seen_at) }))))
+    : el("div", { class: "empty", text: "Henüz kayıtlı kamera yok." }));
+}
+function runStatusCell(r) {
+  const end = r.report && END_REASON[r.report.end_reason];
+  const why = r.liveness === "live" ? "canlı" : r.liveness === "no_heartbeat" ? "canlılık sinyali yok" : (end || "");
+  return el("td", null, pill(r.status, RUN_STATUS[r.status] || r.status), el("span", { class: "why", text: why }));
+}
+const runDur = r => r.finished_at ? fmtDur((new Date(r.finished_at) - new Date(r.started_at)) / 1000) : "–";
+async function loadRuns(append) {
+  if (R.busy) return;
+  R.busy = true;
+  setStatus("rStatus", "Yükleniyor…");
+  const f = $("rForm").elements;
+  try {
+    const d = await getJSON("/api/history/runs", { camera_id: f.camera_id.value, ...rangeParams($("rForm")),
+      status: f.status.value, limit: 50, cursor: append ? R.cursor : null });
+    let body = append ? $("rTable").querySelector("tbody") : null;
+    if (!body) {
+      const t = table(["Başlangıç", "Kamera", "Durum", { text: "Döngü", class: "num" }, "Süre", { text: "Kişi", class: "num" },
+        { text: "İhlalli kişi", class: "num" }, { text: "İhlal", class: "num" }, { text: "Olay", class: "num" }, ""], []);
+      $("rTable").replaceChildren(d.total ? t : "");
+      body = t.tBodies[0];
+    }
+    d.items.forEach(r => {
+      const btn = el("button", { type: "button", text: "Detay" });
+      btn.onclick = () => showRun(r.run_id);
+      body.append(el("tr", null, el("td", { text: fmtDT(r.started_at) }), camCell(r), runStatusCell(r),
+        el("td", { class: "num", text: r.loop_no ?? "–" }), el("td", { text: runDur(r) }),
+        el("td", { class: "num", text: fmtN(r.person_count) }), el("td", { class: "num", text: fmtN(r.persons_with_violation) }),
+        el("td", { class: "num", text: fmtN(r.verified_incidents) }), el("td", { class: "num", text: fmtN(r.event_count) }),
+        el("td", null, btn)));
+    });
+    R.cursor = d.next_cursor;
+    $("rMore").hidden = !d.next_cursor;
+    setStatus("rStatus", d.total ? `${fmtN(d.total)} run · ${fmtN(body.rows.length)} gösteriliyor` : "Bu filtrelere uyan run yok.");
+  } catch (e) { setStatus("rStatus", e.message, true); }
+  finally { R.busy = false; }
+}
+async function showRun(id) {
+  const my = ++DETAIL_SEQ;
+  openDetail("Run raporu", el("p", { class: "why", text: "Yükleniyor…" }));
+  const current = () => my === DETAIL_SEQ && $("detail").open;
+  try {
+    const r = await getCached(`/api/history/runs/${encodeURIComponent(id)}`);
+    if (!current()) return;
+    const rep = r.report;
+    const liveNote = r.status === "running" ? el("p", { class: "run-live", role: "status",
+      text: "Bu run devam ediyor: sayılar anlık; kişi (iz) raporu run bitince oluşur." }) : null;
+    const reasons = rep ? Object.entries(rep.unclosed_by_reason).map(([k, n]) => `${REASON[k] || k}: ${n}`).join(" · ") : "";
+    const info = kv([
+      ["Kamera (bu run'daki kaynak)", srcName(r)],
+      ["Kamera kimliği", r.camera_id + (r.camera_current_name ? ` · bugünkü adı: ${r.camera_current_name}` : "")],
+      r.source_ref ? ["Kaynak", `${r.source_ref}${r.source_kind ? ` (${r.source_kind})` : ""}`] : null,
+      ["Durum", el("span", null, pill(r.status, RUN_STATUS[r.status] || r.status),
+                   r.liveness === "no_heartbeat" ? " canlılık sinyali yok" : r.liveness === "live" ? " canlı" : "")],
+      ["Başlangıç", fmtDT(r.started_at)], ["Bitiş", r.finished_at ? fmtDT(r.finished_at) : "–"],
+      ["Son canlılık", fmtDT(r.last_seen_at)], ["Döngü", r.loop_no ?? "–"],
+      ["Video", r.width ? `${r.width}×${r.height}` + (r.fps ? ` · ${r.fps} kare/sn` : "") : "–"],
+      ["İhlaller", `${fmtN(r.verified_incidents)} doğrulanmış · ${fmtN(r.incident_count)} kayıt · ${fmtN(r.event_count)} olay`],
+      ["Kişiler", `${fmtN(r.person_count)} iz · ${fmtN(r.persons_with_violation)} tanesinde ihlal`],
+      rep ? ["Rapor notları", [reasons || "Açık kalan ihlal yok", rep.unclosed_overflow ? ` · liste taşması: ${rep.unclosed_overflow}` : "",
+              rep.orphan_events ? ` · başlangıçsız olay: ${rep.orphan_events}` : ""].join("")] : ["Rapor", "Henüz run raporu yok"],
+      rep && rep.error ? ["Hata", rep.error] : null]);
+    const byStatus = el("p", null, ...Object.keys(STATUS).filter(k => r.incidents_by_status[k])
+      .flatMap(k => [pill(k, `${STATUS[k]}: ${r.incidents_by_status[k]}`), " "]));
+    const go = el("button", { type: "button", text: "Bu run'ın ihlallerini listele" });
+    go.onclick = () => {
+      H.run = r.run_id;
+      $("hRunChip").querySelector("span").textContent = `Run ${r.run_id.slice(0, 8)} · ${srcName(r)}`;
+      $("hRunChip").hidden = false;
+      $("detail").close();
+      showView("history", true);
+    };
+    const persons = r.persons.map(p => el("tr", null, el("td", { text: `#${p.track_id}` }),
+      el("td", { text: `${p.first_sec} – ${p.last_sec} sn` }), el("td", { class: "num", text: fmtN(p.observations) }),
+      SCORES ? [el("td", { class: "num", text: pct(p.helmet_rate) }), el("td", { class: "num", text: pct(p.vest_rate) })] : null,
+      el("td", null, pill(p.ever_violation ? "IHLAL" : "UYGUN", p.ever_violation ? "İhlal yaşandı" : "Uygun"))));
+    openDetail("Run raporu", liveNote, info, byStatus, go,
+      el("h2", { text: "Kişi (iz) raporu", style: "padding-left:0" }),
+      persons.length ? el("div", { class: "tscroll" }, table(["İz ID", "Aralık", { text: "Gözlem", class: "num" },
+        ...(SCORES ? [{ text: "Baret (model %)", class: "num" }, { text: "Yelek (model %)", class: "num" }] : []), "Sonuç"], persons))
+        : el("div", { class: "empty", text: "Bu run için kişi raporu yok (run sürüyor veya rapor gelmedi)." }));
+  } catch (e) { if (current()) openDetail("Run raporu", el("p", { class: "status-line err", text: e.message })); }
+}
+
+/* --- sekmeler --- */
+const VIEWS = ["live", "history", "stats", "runs"];
+async function refreshView(v) {
+  const st = { history: "hStatus", stats: "sStatus", runs: "rStatus" }[v];
+  if (st) setStatus(st, "Yükleniyor…");          // kameralar yüklenirken önceki filtrenin eski sonucu yeni filtreyle yan yana görünmesin
+  let cams = [];
+  try { cams = await loadCameras(); } catch (e) { /* hata ilgili ekranın durum satırında görünür */ }
+  if (v === "history") loadHistory(false);
+  else if (v === "stats") loadStats();
+  else if (v === "runs") { renderCameras(cams); loadRuns(false); }
+}
+function showView(v, user) {
+  if (!ME) return;
+  if (!VIEWS.includes(v) || (v === "live" && !LIVE_OK) || (v === "runs" && !TECH)) v = LIVE_OK ? "live" : "stats";
+  VIEWS.forEach(x => { $("view-" + x).hidden = x !== v; $("tab-" + x).setAttribute("aria-selected", String(x === v)); });
+  if (user) window.history.replaceState(null, "", v === "live" ? location.pathname : "#" + v);
+  if (v !== "live") refreshView(v);
+}
+document.querySelectorAll(".tabs button").forEach(b => { b.onclick = () => showView(b.dataset.view, true); });
+window.addEventListener("hashchange", () => showView(location.hash.slice(1), false));   // geri/ileri ve elle adres
+$("hForm").onsubmit = e => { e.preventDefault(); loadHistory(false); };
+$("hReset").onclick = () => { $("hForm").reset(); H.run = null; $("hRunChip").hidden = true; loadHistory(false); };
+$("hRunChip").querySelector("button").onclick = () => { H.run = null; $("hRunChip").hidden = true; loadHistory(false); };
+$("hMore").querySelector("button").onclick = () => loadHistory(true);
+$("sForm").onsubmit = e => { e.preventDefault(); loadStats(); };
+$("sReset").onclick = () => { $("sForm").elements.camera_id.value = ""; statsDefaultRange(); loadStats(); };
+$("rForm").onsubmit = e => { e.preventDefault(); loadRuns(false); };
+$("rReset").onclick = () => { $("rForm").reset(); loadRuns(false); };
+$("rMore").querySelector("button").onclick = () => loadRuns(true);
+$("detailClose").onclick = () => $("detail").close();
+$("detail").onclick = e => { if (e.target === $("detail")) $("detail").close(); };
+let resizeT;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeT);
+  resizeT = setTimeout(() => { if (!$("view-stats").hidden && lastDaily.length) drawChart(lastDaily); }, 150);
+});
+/* --- oturum (FAZ 6): sunucu tarafı oturum, HttpOnly çerez; CSRF token yalnız bellekte --- */
+let ME = null, CSRF = null, LIVE_OK = false, liveTimer = null;
+// SCORES: model oranı yetkisi (yalnız admin; sunucu /api/auth/me'den). SESSION: oturum kuşağı — çıkış/giriş sonrası
+// önceki oturumdan gecikmeli gelen yanıt (ör. admin verisi) yeni kullanıcının ekranına yazılmaz.
+// TECH: teknik ayrıntı yetkisi (yalnız admin): run raporları, iz no, video saniyesi, ham olay sayıları, analiz kapsamı.
+let SCORES = false, TECH = false, SESSION = 0;
+const ROLE_TR = { admin: "Yönetici", supervisor: "Kullanıcı", viewer: "İzleyici" };   // supervisor = "user" rolü
+function clearUserData() {         // önceki kullanıcının verisi (görüntüler dahil) gizli DOM'da kalmasın
+  for (const id of ["hTable", "rTable", "rCams", "sTiles", "sChart", "sCams", "sStatusTbl", "sDailyTable",
+                    "detailBody", "peopleWrap", "covWrap"]) $(id).replaceChildren();
+  for (const id of ["hStatus", "sStatus", "rStatus"]) setStatus(id, "");
+  $("hMore").hidden = true; $("rMore").hidden = true; $("hRunChip").hidden = true;
+  H.cursor = null; H.run = null; R.cursor = null; lastDaily = [];
+  DETAIL_CACHE.clear(); DETAIL_SEQ++;              // önceki oturumun detay yanıtları yeni kullanıcıya gösterilmez
+  tiles.forEach(t => { if (t.url) URL.revokeObjectURL(t.url); t.el.remove(); });
+  tiles.clear(); byIdx.clear(); $("gridEmpty").style.display = "";
+  EXPANDED = null;
+  try { sessionStorage.removeItem("ppe.expanded"); } catch (e) { /* depolama kapalı */ }
+  clearFeed(); after = 0; total = 0; $("nTotal").textContent = "0";
+  $("reportWrap").replaceChildren(el("div", { class: "empty", text: "Dedektör bir videoyu bitirince rapor oluşur." }));
+  $("dlgImg").removeAttribute("src");
+}
+function showLogin(msg, isError = true) {
+  ME = null; CSRF = null; LIVE_OK = false; SCORES = false; TECH = false; SESSION++;
+  if (liveTimer) { clearInterval(liveTimer); liveTimer = null; }
+  if (WS) { const w = WS; WS = null; w.close(); }
+  if ($("detail").open) $("detail").close();
+  if ($("dlg").open) $("dlg").close();
+  clearUserData();
+  $("loginView").hidden = false; $("appTabs").hidden = true; $("userBox").hidden = true;
+  VIEWS.forEach(x => { $("view-" + x).hidden = true; });
+  $("conn").className = ""; $("connText").textContent = "Oturum kapalı";
+  setStatus("loginStatus", msg || "", !!msg && isError);
+  $("loginForm").elements.username.focus();
+}
+function startApp(me) {
+  ME = me.user; CSRF = me.csrf_token; LIVE_OK = !!me.permissions.live; SCORES = !!me.permissions.model_scores;
+  TECH = !!me.permissions.technical; SESSION++;
+  $("loginView").hidden = true; $("appTabs").hidden = false; $("userBox").hidden = false;
+  $("userName").textContent = `${ME.username} · ${ROLE_TR[ME.role] || ME.role}`;
+  $("tab-live").hidden = !LIVE_OK;
+  $("tab-runs").hidden = !TECH;
+  for (const id of ["covBox", "reportBox", "hNoteTrack", "sNoteRaw"]) $(id).hidden = !TECH;
+  if (!LIVE_OK) { $("conn").className = ""; $("connText").textContent = "Canlı izleme yetkisi yok"; }
+  statsDefaultRange();
+  showView(location.hash.slice(1), false);
+  if (LIVE_OK) { connectWS(); tick(); liveTimer = setInterval(tick, 700); }
+}
+async function boot() {
+  try {
+    const r = await fetch("/api/auth/me");
+    if (r.status === 401) return showLogin("", false);
+    if (!r.ok) return showLogin(r.status === 503 ? "Veritabanına şu an ulaşılamıyor; birazdan tekrar deneyin."
+                                                  : `Sunucu hatası (HTTP ${r.status}).`);
+    startApp(await r.json());
+  } catch (e) { showLogin("Dashboard sunucusuna ulaşılamıyor."); }
+}
+$("loginForm").onsubmit = async e => {
+  e.preventDefault();
+  const f = e.target.elements;
+  setStatus("loginStatus", "Giriş yapılıyor…");
+  try {
+    const r = await fetch("/api/auth/login", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: f.username.value, password: f.password.value }) });
+    f.password.value = "";
+    if (r.ok) return boot();
+    setStatus("loginStatus", { 401: "Kullanıcı adı veya parola hatalı ya da hesap geçici olarak kilitli.",
+      429: "Çok fazla başarısız deneme; bir süre sonra tekrar deneyin.",
+      503: "Veritabanına şu an ulaşılamıyor; birazdan tekrar deneyin." }[r.status] || `Giriş başarısız (HTTP ${r.status}).`, true);
+  } catch (err) { setStatus("loginStatus", "Dashboard sunucusuna ulaşılamıyor.", true); }
+};
+$("logout").onclick = async () => {
+  try { await fetch("/api/auth/logout", { method: "POST", headers: { "X-CSRF-Token": CSRF || "" } }); }
+  catch (e) { /* sunucuya ulaşılamasa da yerel durum temizlenir */ }
+  showLogin("Oturum kapatıldı.", false);
+};
+boot();
 </script>
 </body>
 </html>

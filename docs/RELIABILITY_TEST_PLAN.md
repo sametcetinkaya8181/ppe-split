@@ -1,0 +1,208 @@
+# Güvenilirlik, yük ve arıza testi planı (FAZ 9)
+
+Kapsam: dedektör (YOLO26n + ByteTrack + PPEMonitor + IncidentTracker), kalıcı outbox (SQLite WAL), dashboard
+(FastAPI) ve PostgreSQL 17'nin **çoklu kamera, uzun süreli çalışma ve arıza** koşullarındaki davranışı.
+Model doğruluğu bu planın konusu değildir (bkz. `MODEL_EVALUATION_PROTOCOL.md`). Sonuçlar:
+`PHASE_9_REPORT.md`, ölçülmüş taban çizgisi: `PERFORMANCE_BASELINE.md`.
+
+## 1. İlkeler
+
+1. **Yıkıcı testler yalnız izole yığında.** `tools/reliability/docker-compose.reliability.yml` ayrı bir compose
+   projesidir (`ppe-rel`): ayrı PostgreSQL volume'u (`ppe-rel_rel_pgdata`), ayrı snapshot volume'u, ayrı port
+   (`127.0.0.1:8100`), her kurulumda rastgele üretilen parolalar/token (`tools/reliability/output/rel.env`, Git dışı).
+   Ana yığın (`ppe-split`), ana veritabanı, ana `detector/outbox` dizini ve snapshot'lar **hiçbir testte**
+   durdurulmaz, değiştirilmez, silinmez. `docker compose down -v` / `prune` kullanılmaz.
+2. **Gerçek kod yolu.** Yük testleri gerçek `detector.py` (gerçek model, GPU), arıza testleri ya gerçek dedektör ya da
+   YOLO yerine senaryolu tespit üreten fakat geri kalan zinciri **üretim modülleriyle** çalıştıran sentetik kamera
+   (`eventgen.py`: `PPEMonitor` → `enrich_event`/`IncidentTracker` → `DurableSender` → SQLite outbox → HTTP) kullanır.
+3. **Kayıp ölçümü defterle.** Sentetik kamera, outbox'a COMMIT edilmiş her olay/rapor kimliğini fsync'li bir deftere
+   (`ledger.jsonl`) yazar. Test sonunda defter PostgreSQL ile karşılaştırılır: eksik (kayıp), fazla, çift satır.
+   Gerçek dedektör senaryolarında karşılaştırma outbox dosyasındaki `msg_id`'lerle yapılır.
+4. **Uydurma yok.** Yapılmayan test SKIP/BLOCKED/NOT RUN; süre ve koşullar UTC başlangıç/bitişle yazılır; kısa testten
+   bellek sızıntısı sonucu çıkarılmaz; önceden belirlenmemiş SLO "karşılandı" denmez.
+5. **Süreç izolasyonu (FAZ 10-A.1).** Araçlar yalnız kendi başlattıkları süreçleri (`Popen` nesnesinin PID'i ve
+   ağacı) durdurur. Elle süreç sonlandırmak gerekirse önce PID, başlatılma zamanı, komut satırı ve çalışma dizininin
+   bu projeye ait olduğu doğrulanır, sonra **yalnız o PID** sonlandırılır:
+   `Get-CimInstance Win32_Process -Filter "ProcessId=<pid>" | Select ProcessId,CreationDate,CommandLine` →
+   `taskkill /PID <pid> /T /F`. Ad/desen filtreli toplu sonlandırma (`taskkill /IM python.exe`, `/FI`,
+   `Stop-Process -Name`, `pkill`) kullanılmaz; başka projelerin (ör. LLM_Insight) süreçlerine, container'larına ve
+   volume'larına dokunulmaz. Container işlemleri yalnız `-p ppe-rel` / `ppe-split` proje adıyla yapılır.
+5. **Gizlilik.** Ölçümlerde ve çıktılarda görüntü içeriği, kaynak adresi, token, kişi kimliği yok. Track sayısı
+   benzersiz kişi sayısı olarak sunulmaz. Test videoları yereldeki stok videolardır; dış servise gönderilmez.
+
+## 2. Gözlem (observability) bileşenleri
+
+| Katman | Nerede | Ne |
+|---|---|---|
+| Dedektör | `detector/telemetry.py`, `OUTBOX_DIR/<kamera>.health.json` (HEALTH_EVERY sn), kare meta'sında `health` | çalışma süresi, kamera durumu, işlenen/kaynak FPS, kare süresi p50/p95/p99, gecikme (lag), YOLO/ByteTrack/PPEMonitor süreleri, CPU/RAM/tanıtıcı/thread, GPU kullanım/VRAM, sinyal yok/donmuş kare, **analiz kapsamı** |
+| Outbox | `outbox.py` metrikleri, `<kamera>.status.json`, kare meta'sında `outbox` | pending_count/bytes, oldest_pending_age, retry, delivered, replay_success_count, dead/quarantine, disk_write_errors, WAL/dosya boyutu, disk boş alanı, uyarılar |
+| Dashboard | `GET /api/ops/metrics` (yalnız admin) | route şablonu başına istek/gecikme p50/p95/p99, 401/403/409/413/422/503 sayıları, ingest başarı/hata, olay alındı/eklendi/tekrar, DB yazım gecikmesi, WebSocket bağlantıları, geçmiş API gecikmesi, PostgreSQL hazır/havuz, snapshot deposu, kamera başına canlı durum |
+| Arayüz | Canlı izleme karoları | "kamera izlenemiyor" (dedektör yok / sinyal yok / bağlantı koptu / donmuş), "N kişi değerlendirilemiyor (neden)", gecikme, olay kuyruğu birikmesi |
+
+## 3. Yük matrisi (çoklu kamera)
+
+| Değişken | Değerler |
+|---|---|
+| Kamera sayısı | 1, 2, 3, 4 (her kamera ayrı süreç + ayrı model, üretim mimarisi) |
+| VID_STRIDE | 2 (üretim) ve 1 (ayrı deney) |
+| Kaynak | Yerel 1080p videolar (V1 25 fps, V2 23.98 fps) gerçek zaman hızında; 3. ve 4. kamera aynı videoları **yeniden kullanır** (sonuçta `reused_video` olarak işaretli) |
+| Süre | Isınmadan sonra 120 sn ölçüm / senaryo (5 sn örnekleme) |
+| Ölçülen | kamera başına etkin FPS, lag p50/p95/max, kare süresi p95/p99, çıkarım p50/p95/p99, ByteTrack/PPEMonitor p95, GPU kullanım/VRAM, CPU, RAM, outbox birikmesi, dashboard `/api/state` gecikmesi, DB yazım gecikmesi, WebSocket kare akışı, teslim (outbox ↔ DB) |
+| Komut | `python tools/reliability/stress.py --matrix 1:2,2:2,3:2,4:2,1:1,2:1,3:1 --duration 120` |
+
+Kapasite kararı ölçütü (öneri, SLO değil): kamera başına etkin FPS ≥ kaynak FPS / stride × 0.95 ve lag p95 < 1 sn ve
+lag eğimi ≈ 0 (sürekli artmıyor). Bu koşulu sağlayan en büyük kamera sayısı "ölçülmüş kapasite" olarak raporlanır.
+
+## 4. Uzun süreli (soak) test
+
+| Aşama | Süre | Durum ölçütü |
+|---|---|---|
+| Duman | 30 sn, 1 kamera | araç zinciri, zarif kapanış, teslim |
+| Stabilite | 1 saat, 3 kamera, stride 2 | bellek/tanıtıcı/VRAM/WAL/DB bağlantısı/lag eğimi, teslim, WebSocket kopması, reconnect |
+| Soak | 4 saat | yalnız gerçekten koşulursa raporlanır |
+| Uzun soak | 24 saat | yalnız gerçekten koşulursa raporlanır |
+
+Komut: `python tools/reliability/stress.py --matrix 3:2 --duration 3600 --interval 15 --name soak1h`.
+Zaman serisi: `samples.jsonl` + `samples.csv`. Eğimler doğrusal regresyonla (birim/saat) hesaplanır; 1 saatlik veriden
+yalnız "1 saat içinde belirgin artış var/yok" sonucu çıkarılır, 24 saatlik sızıntı yokluğu iddia edilmez.
+
+## 5. Arıza enjeksiyonu
+
+`python tools/reliability/failures.py [--only A,B,...]`. Her senaryo: arıza öncesi akış → arıza → kaldırma →
+kuyruk boşalması → doğrulama (defter ↔ DB).
+
+| Kod | Arıza | Yöntem | Beklenen |
+|---|---|---|---|
+| A | PostgreSQL durdur/başlat | `docker stop/start ppe-rel-db-1` (25 sn) | `/health/ready` 503, `/healthz` 200; olaylar outbox'ta birikir (geri çekilme); DB dönünce sıra korunarak teslim; kayıp 0, çift 0 |
+| B | Dashboard yeniden başlatma | `docker restart ppe-rel-dashboard-1` | bağlantı reddi → birikme → teslim; RAM'deki canlı uyarı listesi sıfırlanır (geçmiş DB'de) |
+| C | Süreç zorla öldürme | sentetik kamera DB'ye ulaşamazken `taskkill /T /F`, aynı outbox ile yeniden başlatma | bekleyenler aynı kimliklerle replay; `replay_success_count` > 0; kayıp 0, çift 0 |
+| D | Kamera/akış kopması | gerçek dedektör + ffmpeg MPEG-TS/TCP ağ akışı (RTSP sunucusu yok → benzetim); ffmpeg öldürülür, 25 sn sonra yeniden başlatılır | dedektör "bağlantı koptu/sinyal yok" işaretler, operatör ekranında "izlenemiyor", aynı kamera kimliğiyle yeni run, sabit 3 sn yeniden deneme |
+| E1 | Ağ zaman aşımı | arıza vekili `hang` (20 sn) | istemci zaman aşımı (5 sn) → geri çekilme → teslim; kayıp 0 |
+| E2 | ACK kaybı | vekil `ack_loss`: sunucu işler, yanıt kaybolur | aynı gövde yeniden gönderilir; DB'de çift satır 0 (`events_duplicate_ignored` artar) |
+| F | HTTP 503 | vekil `status:503` (20 sn) | geri çekilme, sonra teslim; kayıp 0 |
+| G1 | 401 (gerçek yanlış token) | yanlış token ile başla, 15 sn sonra token dosyasını düzelt (yeniden başlatma yok) | gönderim DURAKLAR, olaylar korunur; ≤ 30 sn içinde token yeniden okunur ve teslim |
+| G2 | 403 | vekil `status:403` (15 sn) | duraklatma, olay düşürülmez |
+| H | SQLite kilitli | aynı kamera için ikinci süreç | ikinci süreç `OutboxLocked` ile başlamaz; birincisi etkilenmez |
+| I | Disk/kapasite sınırı | `OUTBOX_MAX_ITEMS=40` + 45 sn 503 | high_watermark uyarısı, yalnız `ongoing` seyreltilir, start/end kaybı 0; yedek alan dolarsa bellek yedeği + görünür hata |
+| J | Bozuk/büyük payload | geçersiz JSON, yanlış tip, kötü kamera kimliği, bozuk snapshot, 201 olay, 9 MiB gövde, token yok | 422/413/401; DB'ye satır yok; servis ayakta |
+| K | WebSocket kopması | B sırasında oturumlu WebSocket probu | kopma algılanır, istemci yeniden bağlanır, kare akışı sürer |
+| L | Container restart (gerçek dedektör) | dedektör çalışırken dashboard, sonra DB container'ı yeniden başlatılır | dedektör etkilenmez; olaylar outbox ↔ DB eşit; çift 0 |
+| M | Gerçek dedektör zorla öldürme | 503 sırasında `taskkill /T /F`, aynı outbox ile yeniden başlat | replay; öldürülen run raporsuz `running` kalır (uzlaştırma adayı); kayıp 0 |
+| — | Gerçek disk doldurma, gerçek RTSP kamera, Windows uyku/yeniden başlatma, GPU sıfırlama/OOM | — | **SKIP** (ortamda güvenli yapılamaz; ayrı bakım penceresi gerekir) |
+
+## 6. Kabul ölçütleri (test geçti/kaldı)
+
+| Ölçüt | Eşik |
+|---|---|
+| Outbox'a commit edilmiş olay/rapor kaybı (her arıza) | 0 |
+| DB'de aynı `event_id` ile çift satır | 0 |
+| Arıza sırasında olay düşürme (start/end/rapor) | 0 (yalnız kapasite testinde `ongoing` seyreltme beklenir ve sayılır) |
+| Kamera izlenemiyorken arayüz | "izlenemiyor" açıkça görünür, "ihlal yok" gibi görünmez |
+| Arıza kaldırıldıktan sonra kuyruğun boşalması | ölçülür ve raporlanır (önceden SLO yok; öneri PERFORMANCE_BASELINE.md) |
+| Dedektör/dashboard regresyonu | tüm testler PASS |
+
+## 7. Çıktılar ve saklama
+
+Tüm ham çıktılar `tools/reliability/output/<UTC>_<ad>/` (Git dışı): `result.json`, `samples.jsonl`,
+`samples.csv`, `timeline.json`, `ledger.jsonl` (yalnız kimlikler), süreç logları, izole outbox dosyaları (sentetik
+görüntü). İzole yığın volume'ları test sonrası **silinmez**; temizlemek kullanıcı kararıdır:
+`docker compose -p ppe-rel -f tools/reliability/docker-compose.reliability.yml down` (verisi kalır) ve gerekirse
+`docker volume rm ppe-rel_rel_pgdata ppe-rel_rel_data` (yalnız test verisi).
+
+## 8. FAZ 10-A ekleri
+
+| Araç | Amaç | Komut |
+|---|---|---|
+| `tools/reliability/lifecycle_sim.py` | Kaynak yaşam döngüsü **simülasyonu** (gerçek dedektör + TCP/MPEG-TS kamera benzeticisi): R1 geçici kopma, R2 kalıcı kayıp (geri çekilme + operatör görünürlüğü), R3 donma (varsayılan okuma zaman aşımı), R4 başlangıçta erişilemeyen → sonradan erişilebilir uç. Ölçülen: DB run durumu/bitiş nedeni, aynı kamera kimliği, yeniden bağlanma süresi, geri çekilme aralıkları, operatör ekranı, outbox ↔ DB | `python tools/reliability/lifecycle_sim.py` |
+| `tools/reliability/soak.py` | Uzun soak: 3 yerel dosya + 1 ağ kamerası benzeticisi (4 kamera), ağ kamerasına periyodik kopma (60 sn) ve donma (45 sn); zaman serisi + teslim bütünlüğü (gönderici sayaçları ↔ DB) + run durumları | `python tools/reliability/soak.py --hours 4` / `--hours 24` |
+
+Gerçek RTSP kamera (kimlik doğrulama hatası, RTSP `timeout`/`rw_timeout` davranışı, UDP/TCP taşıma) bu araçlarla
+**test edilmez**; sahada gerçek kamerayla ayrıca yapılmalıdır (BLOCKED: erişim yok). 24 saatlik soak için araç hazır;
+sonuç ancak gerçekten 24 saat koşulduğunda yazılır.
+
+## 9. FAZ 10-A.1 ekleri — bellek katmanları ve 24 saatlik soak
+
+| Araç | Amaç | Komut |
+|---|---|---|
+| `tools/reliability/memboot.py` | Dashboard bellek probu (yalnız izole yığın): uvicorn'u Dockerfile ile aynı ayarlarla başlatır; aynı süreçte RSS/RssAnon, glibc `mallinfo2` (kullanımda / boş / mmap), Python blokları, GC sayıları, tip histogramı, uygulama yapılarının boyutları, SQLAlchemy derlenmiş ifade önbelleği (ve hangi ifadelerin girdi ürettiği), isteğe bağlı tracemalloc. Satırlar container log'una `MEMPROBE {json}` | `memtest.py` / `soak.py --memprobe` başlatır |
+| `tools/reliability/memtest.py` | Kontrollü, GPU'suz, tekrarlanabilir bellek testi: gerçek outbox/DurableSender kullanan sentetik kameralar (`eventgen.py --frame-video`, gerçek video kareleri 640 px / JPEG 80), operatör taklidi (`/ws` + `/api/state` 0.7 sn + `/api/ops/metrics` 30 sn); cgroup katmanları (anon / file / kernel) ayrı | `python tools/reliability/memtest.py --minutes 90 --label base` (`--env MALLOC_ARENA_MAX=2`, `--trace 8`) |
+| `tools/reliability/gpu_parity.py` | İki venv'de gerçek best.pt + ByteTrack + PPEMonitor çıktısının kare kare karşılaştırması (paket değişikliği model davranışını değiştirdi mi?) | `<venv>\Scripts\python.exe tools/reliability/gpu_parity.py --out A.json`, `--compare A.json B.json` |
+
+A/B (aynı makine, aynı yük): önceki sürümün imajı Git'ten kurulur ve `--image` ile verilir, ör.
+`git archive <commit> dashboard | tar -x -C <geçici>` → `docker build -t ppe-dashboard:<etiket> <geçici>/dashboard` →
+`memtest.py --label base --image ppe-dashboard:<etiket>`. `memtest.py` macOS/Linux'ta da çalışır (GPU gerekmez;
+sentetik kameralar için numpy + opencv-python-headless + requests + psutil içeren bir venv ve
+`REL_DETECTOR_PY=<venv>/bin/python`); süreçler yeni oturumda başlatılır, SIGINT ile zarif durdurulur.
+
+**Ölçüm kuralı:** `docker stats` belleği = cgroup belleği − `inactive_file`; kernel slab'ı (dosya dentry/inode
+önbelleği) ve aktif sayfa önbelleğini içerir. Sızıntı kararı yalnız **anon** (süreç) belleği ve Python/ayırıcı
+katmanlarından verilir; dosya önbelleği ve slab geri kazanılabilir kernel belleğidir.
+
+### 24 saatlik soak prosedürü (yeniden başlatılabilir, doğrulanabilir)
+
+Ön koşullar (başlamadan kontrol edilir, sonuç `result.json`'a yazılır):
+1. Dizüstü AC güçte; AC'de uyku/hazırda bekletme kapalı (`powercfg /q SCHEME_CURRENT SUB_SLEEP`); kapak kapatılmaz.
+2. Diskte ≥ 10 GB boş alan (24 saatte ham çıktı + outbox + izole DB ≈ 1–2 GB).
+3. Boş RAM ≥ 3 GB önerilir; ağır uygulamalar kapatılır. `soak.py` bellek koruması (boş RAM < eşik veya sayfa
+   dosyası > %90, 10 ardışık örnek) testi **durdurur** ve `memory_guard` yazar — bu durumda sonuç INCOMPLETE'tir.
+4. İzole yığın güncel imajla: `docker compose -p ppe-rel -f tools/reliability/docker-compose.reliability.yml
+   --env-file tools/reliability/output/rel.env build dashboard`. Ana yığına (ppe-split) dokunulmaz.
+5. Başka GPU/dedektör testi çalışmıyor.
+
+Çalıştırma: `python tools/reliability/soak.py --hours 24 --memprobe` (arka planda; çıktı
+`tools/reliability/output/<UTC>_soak24h/`). Örnekler `samples.jsonl`'a anlık yazılır; dashboard prob satırları
+container log'unda birikir.
+
+PASS ölçütü (hepsi): `measured_sec` ≥ 86 400; `memory_guard` ve `detector_exit` yok; teslim `lost` = 0,
+`duplicates` = 0, `pending_after_stop` = 0, `dead_after_stop` = 0; her ağ arızası doğru durumla
+(`disconnected/...`) kayıtlı; dashboard log'unda traceback 0; dedektör tanıtıcı/thread sayısı ilk saatten sonra
+sabit; **dashboard anon belleği** son 12 saatte plato (eğim < 0,5 MB/sa) ve `sa_compiled_cache` sabit.
+Bunlardan biri sağlanmazsa sonuç FAIL veya INCOMPLETE yazılır; kısmi süre "24 saat" olarak raporlanmaz.
+
+Yarıda kalırsa (güç kesintisi, yeniden başlatma, bellek koruması): kısmi `samples.jsonl` korunur ve "N saat,
+INCOMPLETE" olarak raporlanır; `docker logs ppe-rel-dashboard-1 > memprobe_partial.log` ile prob satırları
+alınır; aynı komutla **baştan** yeniden başlatılır (süreler birleştirilmez — kesintisiz 24 saat gerekir).
+Doğrulama: `result.json` → `delivery`, `runs_by_camera`, `memprobe.summary`; zaman serisi `samples.csv`
+(`dash_cg_anon_mb`, `dash_cg_file_mb`, `dash_cg_kernel_mb` ayrı sütunlar).
+
+## 10. SteelBench (FAZ 10-A.4 referansı)
+
+Gerçek dedektörle 3 yerel videoda tekrar çalıştırılabilir referans değerlendirmesi ve kayıt bütünlüğü testi; ayrı
+izole yığın `ppe-bench` (127.0.0.1:8200). Komut: `REL_DETECTOR_PY=<dedektör venv python> python
+tools/reliability/steelbench.py run --images`. Ayrıntı, yorumlama ve lisans kısıtları: `docs/STEELBENCH.md`.
+`common.py` artık `REL_PROJECT` / `REL_ENV_FILE` / `REL_DEFAULT_PORT` ile ayrı bir izole yığın seçebilir; varsayılan
+(`ppe-rel`, `rel.env`, 8100) değişmedi.
+
+## 11. FAZ 10-A.4 — Tekrarlanabilir video taban çizgisi (Windows CUDA, `baseline_eval.py`)
+
+`tools/reliability/baseline_eval.py run` (ayrıntı: `docs/PHASE_10A4_WINDOWS_BASELINE_REPORT.md` §4): V1–V3, VID_STRIDE=2,
+üretim karar zincirinin çevrimdışı izi + gerçek `detector.py` ile uçtan uca teslim, kendi izole yığınında
+(`REL_PROJECT=ppe-eval`, 127.0.0.1:8200; ppe-rel ve ana yığına dokunmaz; önce/sonra izolasyon kontrolü). Ground-truth
+yoksa doğruluk metrikleri `INSUFFICIENT_GROUND_TRUTH`; alarmlar insan inceleme kaydı olmadan `UNREVIEWED`. Model veya
+karar değişikliği önerileri `--previous <taban result.json>` ile karşılaştırmalı koşulur.
+
+## 11. FAZ 10-A.5A — ML hata analizi (tanı)
+
+`tools/reliability/failure_analysis.py collect --baseline <10-A.4 koşusu>` (ayrıntı:
+`docs/PHASE_10A5A_FAILURE_ANALYSIS_REPORT.md` §2): üretim karar zinciri (`pipeline.run_video`) değiştirilmeden
+yalnız gözlem kancalarıyla çalışır — tracker öncesi ham YOLO tespitleri, tracker'ın tüm sınıf çıktısı ve ayrı model
+örneğiyle eşik altı "sonda" (`--probe-conf`, varsayılan 0.05). Önce 10-A.4 iziyle birebir eşdeğerlik doğrulanır
+(kimlik/kutu/güven + olaylar). Analiz (`detector/evaluation/failure.py`, birim testli) eşya kanıtının kaybolduğu
+katmanı, iz kaybı/parçalanma adaylarını, kapsam kırılımını ve yalnız karar katmanının "ne olurdu" yeniden
+oynatmalarını üretir; yeniden oynatma değişiklik yokken üretim olaylarını birebir vermek zorundadır. Kör insan
+inceleme paketi (`review_pack/`) model çizimi olmayan orijinal kareleri, ayrı çizimli kopyaları ve doldurulmadıkça
+araç tarafından reddedilen `review_template.json`'u içerir. Gizli bilgi denetimi:
+`tools/reliability/secret_audit.py` (değer yazdırmaz; üretim token/parolalarının test yığınlarına, kanıt
+klasörüne ve Git geçmişine sızmadığını doğrular).
+
+## 12. FAZ 10-A.5B — Kontrollü ML ve karar deneyleri
+
+`tools/reliability/experiments_5b.py cache` GPU'da bir kez çalışır: kare başına tüm sınıflar conf >= 0.05 (tam
+hassasiyet), Person >= 0.25 kutuları için ikinci aşama kırpıntı doğrulaması ve sentetik bozulmalar (küçültme /
+karartma). `experiments_5b.py run <önbellek>` tamamen çevrimdışıdır: ByteTrack önbellekten yeniden oynatılır
+(üretim girdisi 10-A.5A tanı izini birebir vermek zorundadır), karar katmanı `detector/evaluation/experiments.py`
+`ExperimentalMonitor` ile koşar (varsayılan yapılandırma `PPEMonitor` ile birebir; rastgele dizilerle birim testli).
+Her deney tek değişkenlidir; birleşik varyantlar ayrıca koşulur. Sentetik senaryo paketi (S01-S15) yalnız yazılım
+mantığı regresyonudur. Değerlendirme süreci üretim gizli anahtarlarını taşımaz
+(`detector/evaluation/isolation.py`: `production_settings()` sonrası temizlik + test alt süreçlerinde
+`assert_env_isolated`). Ayrıntı: `docs/PHASE_10A5B_EXPERIMENT_REPORT.md`.
