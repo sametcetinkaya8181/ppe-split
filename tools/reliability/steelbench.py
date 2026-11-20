@@ -614,8 +614,8 @@ def cmd_run(args) -> int:
                            sort_keys=True, default=str).encode()).hexdigest(),
                        "git": git_info(), "license_note": exp["license_note"]}
     before = isolation_fingerprint()
-    if args.build or subprocess.run(["docker", "image", "inspect", "ppe-dashboard:faz9-rel"],
-                                    capture_output=True).returncode != 0:
+    if args.build or subprocess.run(["docker", "image", "inspect", c.dashboard_image()[0]],
+                                    capture_output=True).returncode != 0:   # sabit imajda compose derlemeyi reddeder
         c.compose("build", "dashboard", timeout=1800)
     c.up(build=False)
     c.reset_data()

@@ -41,9 +41,9 @@ def override(out: Path, env: dict, trace: int, interval: float, image: str | Non
 
 
 def compose(ov: Path, *args, timeout=600):
-    cmd = ["docker", "compose", "-p", c.PROJECT, "-f", str(c.COMPOSE), "-f", str(ov), "--env-file", str(c.ENV_FILE),
-           *args]
-    return subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=timeout)
+    # FAZ 02-B hazırlık: common.compose ile aynı yol (ortam yalıtımı, sabit imaj koruması); önceden ortam
+    # süzülmeden doğrudan çağrılıyordu.
+    return c.compose(*args, timeout=timeout, overrides=(ov,))
 
 
 def bring_up(ov: Path, build: bool):

@@ -85,13 +85,37 @@ Video kaynakları: `detector/videos` altındaki üç stok video. Lisansları do�
 ```powershell
 cd C:\Users\PC\Desktop\ppe-split-integration
 # 0) ön kontrol: disk, güç, Windows Update, izole yığın imajı
-detector\.venv\Scripts\python.exe tools\reliability\soak.py --hours 24 --memprobe --interval 30 --min-disk-gb 5
+# İmaj SABİT: doğrulanmış release adayı (derlenmez; latest reddedilir). Verilmezse eski faz9-rel ölçülür.
+$env:REL_DASHBOARD_IMAGE = "ppe-dashboard:0.10.7-rc.faz02a1"
+# ppe-rel volume'u bu dosyanın parolalarıyla kurulu (integration ağacında rel.env yok; araç yenisini üretmeyi reddeder)
+$env:REL_ENV_FILE = "C:\Users\PC\Desktop\ppe-split-main\tools\reliability\output\rel.env"
+$env:REL_DETECTOR_PY = "C:\Users\PC\Desktop\ppe-split-main\detector\.venv\Scripts\python.exe"
+$env:PYTHONIOENCODING = "utf-8"
+& $env:REL_DETECTOR_PY -B tools\reliability\soak.py --hours 24 --memprobe --interval 30 --min-disk-gb 5
 ```
+
+- **İmaj kaydı:** soak, çalışan dashboard'un imaj ID'sini, build etiketlerini (revision, kind, tree-state, version) ve Git durumunu `provenance.json` ile `result.json`'a yazar. İmaj sabitlenmişse ve başka bir imaj çalışıyorsa soak **başlamaz**.
 
 - **Örnekleme:** 30 saniyede bir, yani yaklaşık 2 880 örnek. Docker istatistikleri ve PG sayaçları her 3 örnekte bir alınır.
 - **Arıza planı:** ağ kamerasında 40 dakikada bir 60 s kopma ve 45 s donma; 24 saatte yaklaşık 36 kopma ve 36 donma.
 - **Elle ek senaryo (P-B varsa):** 6. saatte ve 18. saatte gerçek kameranın ağ kablosu ya da PoE'si 2 dakika çıkarılır. Zaman damgaları operatör kaydına yazılır.
 - **İzleme:** operatör 6 saatte bir `samples.jsonl` son satırını ve `detector.log` sonunu kontrol eder. Koşu yalnızca §8'deki koşullarda durdurulur.
+
+### 5.1 Duman koşusu (2026-11-19, 15 dakika) — PASS
+
+`soak.py --hours 0.25 --fault-every 6 --memprobe`, `REL_DASHBOARD_IMAGE=ppe-dashboard:0.10.7-rc.faz02a1`, `REL_ENV_FILE=<ppe-split-main>\tools\reliability\output\rel.env`. Kanıt: `tools/reliability/output/20261119T144122Z_soak0.25h/` (Git dışı).
+
+| Kontrol | Sonuç |
+|---|---|
+| İmaj | Çalışan = istenen `ea722e05…` (release, clean, revision `65fe6ba`); `provenance.json` + `result.json`. Araç ağacı commit'lenmemişti (`dirty=true`) |
+| Teslim (A1–A3) | 266 gönderildi = 266 DB = 266 farklı; bekleyen/ölü/karantina 0; dedektör zarif durdu (2 s, rc 0) |
+| Toparlanma (A9) | 2 kopma + 2 donma; arıza bitişinden ilk işleyen örneğe ≤ 60 s (30 s örnek çözünürlüğü); 14 yeniden bağlanma |
+| Dosya kameraları | `proc_fps` p50 12,0–12,4; `lag_sec` p95 ≤ 0 |
+| Dashboard | `/api/state` p95 33,9 ms; RSS ~100 MB; anon 74→77 MB (15 dakika, eğim için çok kısa) |
+| Host | GPU maks 71 °C; disk 98 GB boş; bellek/disk koruması tetiklenmedi |
+| **Dikkat: bellek** | Dedektör süreç ağacı RSS p50 **6,4 GB** (kamera başına 1,2–1,45 GB). 4 saatlik koşudaki 1,8 GB büyük olasılıkla bellek baskısında Windows'un working set kırpmasıydı (o koşuda swap 3,9 GB). Sistem belleği p95 14,2 / 15,3 GB. RSS = working set; özel bellek (private bytes) ölçülmüyor (B1'e ek). 24 saatte bellek koruması tetiklenebilir |
+
+İlk deneme (`20261119T143956Z_soak0.25h`) yığın kurulurken durdu: integration ağacında yeni üretilmiş `rel.env`, `ppe-split-main`'in `rel.env`'iyle kurulmuş `ppe-rel_rel_pgdata` volume'una uymadı (`password authentication failed`). Düzeltme: `common.env()` volume varken yeni parola üretmeyi reddeder; koşular `REL_ENV_FILE` ile eşleşen dosyayı kullanır.
 
 ## 6. Ölçümler ve analiz
 
@@ -146,7 +170,7 @@ Her durumda dedektör zarif biçimde durdurulur (`stop_detector`), outbox sonucu
 - Makinede acil başka bir iş.
 - Windows'un yeniden başlatma bildirimi.
 
-**Durdurma:** `soak.py` penceresinde **Ctrl+C**. `finally` bloğu sampler'ı durdurur, dedektörü zarifçe kapatır ve sonuçları yazar. Container'lar `docker compose -p ppe-rel -f tools/reliability/docker-compose.reliability.yml stop` ile durdurulur. Üretim projesine komut verilmez.
+**Durdurma:** `soak.py` penceresinde **bir kez Ctrl+C**. Ölçüm döngüsü kesmeyi yakalar (`stop_reason=operator_interrupt`) ve sonraki Ctrl+C'leri yok sayar. Ardından sampler durdurulur, dedektör zarifçe kapatılır, teslim karşılaştırması yapılır ve `result.json` yazılır. (FAZ 02-B'de düzeltildi: önceden kesme `finally`'den sonra yeniden yükseliyor ve `result.json` yazılmıyordu; bkz. `PHASE_02B_SOAK_REPORT.md` S2.) Container'lar `docker compose -p ppe-rel -f tools/reliability/docker-compose.reliability.yml stop` ile durdurulur. Üretim projesine komut verilmez.
 
 ### 8.3 Ani kapanma sonrası kurtarma
 

@@ -375,10 +375,10 @@ Son sürüm numarası (`0.10.7`) ve dağıtım kanalı (`docker save`/`load` ya 
 | Kriter (FAZ 02-A §11) | Durum |
 |---|---|
 | 1. Toplu commit + regresyon | ✅ `65fe6ba`; §6 |
-| 2. İzole `ppe-rel` yığını | ⚠️ **Açık (P1):** `tools/reliability/docker-compose.reliability.yml` dört serviste `image: ppe-dashboard:faz9-rel` sabit. Soak bu haliyle **FAZ 9 imajını** (10-A.1 bellek düzeltmesi ve bu commit **olmadan**) ölçer. Önerilen düzeltme: `${REL_DASHBOARD_IMAGE:-ppe-dashboard:faz9-rel}` + soak sonucuna imaj ID'sinin yazılması, ve soak'ın `0.10.7-rc.faz02a1` ile koşulması. Küçük ve ayrı bir değişiklik; FAZ 02-B başlatılmadığı için yapılmadı |
+| 2. İzole `ppe-rel` yığını | ✅ **FAZ 02-B commit'inde düzeltildi** (soak sonucu: `PHASE_02B_SOAK_REPORT.md`): `REL_DASHBOARD_IMAGE` ile sabit imaj; sabit imajda derleme reddi, `up --no-build`, yerelde yoksa ret, `latest` reddi; `memtest.compose` artık ortam yalıtımlı ortak yoldan; soak imaj kaydı + uyuşmazlıkta ret; `test_rel_image.py` 16 test. Önceki durum — **Açık (P1):** `tools/reliability/docker-compose.reliability.yml` dört serviste `image: ppe-dashboard:faz9-rel` sabit. Soak bu haliyle **FAZ 9 imajını** (10-A.1 bellek düzeltmesi ve bu commit **olmadan**) ölçer. Önerilen düzeltme: `${REL_DASHBOARD_IMAGE:-ppe-dashboard:faz9-rel}` + soak sonucuna imaj ID'sinin yazılması, ve soak'ın `0.10.7-rc.faz02a1` ile koşulması. Küçük ve ayrı bir değişiklik; FAZ 02-B başlatılmadığı için yapılmadı |
 | 3. Disk ≥ 25 GB | ✅ ama dar (29–32 GiB). `--min-disk-gb 5` koruması var |
 | 4. Güç ve güncelleme | ❓ Operatör: AC, kapak eylemi, Windows Update duraklatma, bekleyen yeniden başlatma |
-| 5. Kabul eşikleri (A5–A11) | ❓ Operatör ve İSG onayı |
+| 5. Kabul eşikleri (A5–A11) | ✅ Önerilen eşikler kullanıcı tarafından kabul edildi (2026-11-19). A9'daki kör süre için İSG onayı ayrıca alınmalı |
 | 6. Diğer iş yükleri (`career-agent-*` çalışıyor) | ❓ Kullanıcı kararı |
 | Öneri: R1 soak'tan önce kapatılsın | ✅ Üretim yedeği 2026-11-18'de alındı ve doğrulandı (şifresiz, G1) |
 

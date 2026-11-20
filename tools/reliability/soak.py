@@ -9,6 +9,7 @@ durumları, yeniden bağlanma sayaçları. Gerçek RTSP kamera DEĞİLDİR.
 import argparse
 import json
 import re
+import signal
 import sys
 import threading
 import time
@@ -71,6 +72,38 @@ def collect_memprobe(sd: Path, skip_sec: float) -> dict:
             "tracebacks_in_log": (logs.stdout + logs.stderr).count("Traceback")}
 
 
+def measure(p, hours: float, min_disk_gb: float, sd: Path, res: dict) -> None:
+    """Ölçüm döngüsü; neden durduğu `res["stop_reason"]`a yazılır. FAZ 02-B: operatörün Ctrl+C'si burada yakalanır.
+    Önceden KeyboardInterrupt main()'deki finally'den sonra yeniden yükseliyor, dedektör kapanıyor ama teslim
+    karşılaştırması ve result.json hiç yazılmıyordu. İkinci Ctrl+C son işlemleri bölmesin diye SIGINT yok sayılır."""
+    t0, low, disk_low = time.monotonic(), 0, 0
+    res["stop_reason"] = "duration"
+    try:
+        while time.monotonic() - t0 < hours * 3600:
+            if p.poll() is not None:
+                res["detector_exit"], res["stop_reason"] = p.returncode, "detector_exit"
+                break
+            vm, sw = psutil.virtual_memory(), psutil.swap_memory()
+            low = low + 1 if (vm.available < stress.MEM_GUARD_BYTES or sw.percent > 90) else 0
+            if low >= 10:
+                res["memory_guard"] = {"available_mb": round(vm.available / 2**20), "swap_percent": sw.percent}
+                res["stop_reason"] = "memory_guard"
+                break
+            free_gb = psutil.disk_usage(str(sd)).free / 2**30          # FAZ 02-A: disk doluluk koruması
+            disk_low = disk_low + 1 if free_gb < min_disk_gb else 0
+            if disk_low >= 10:
+                res["disk_guard"] = {"free_gb": round(free_gb, 2), "min_gb": min_disk_gb}
+                res["stop_reason"] = "disk_guard"
+                break
+            time.sleep(5)
+    except KeyboardInterrupt:
+        res["stop_reason"] = "operator_interrupt"
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        print("Ctrl+C alındı: ölçüm durdu. Dedektör kapatılıyor ve sonuçlar yazılıyor; TEKRAR BASMAYIN…", flush=True)
+    res["measured_sec"] = round(time.monotonic() - t0, 1)
+    res["measure_end_utc"] = c.utc()
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--hours", type=float, default=4)
@@ -90,11 +123,19 @@ def main(argv=None):
     outbox = sd / "outbox"
     if a.memprobe:                                     # izole yığında dashboard aynı uvicorn ayarlarıyla, prob thread'iyle
         memtest.bring_up(memtest.override(sd, {}, 0, a.interval), build=False)
+    # FAZ 02-B hazırlık: hangi imajın ölçüldüğü sonuca yazılır; sabit imaj istenip başka imaj çalışıyorsa soak
+    # BAŞLAMAZ (ör. önceden faz9-rel ile kaldırılmış yığın yeni kodu ölçüyormuş gibi görünmesin).
+    image = c.image_provenance()
+    c.write_json(sd / "provenance.json", {"dashboard_image": image, "git": c.git_info(), "utc": c.utc()})
+    if image["pinned"] and not image["matches_requested"]:
+        raise SystemExit(f"REDDEDİLDİ: istenen imaj {image['requested']} ({image['requested_id']}) çalışmıyor; "
+                         f"dashboard {image['image_id']} ile ayakta. Yığını REL_DASHBOARD_IMAGE ile yeniden kaldırın")
     c.reset_data()
     sim = CameraSim(c.VIDEOS[NET[1]], NET[2]).start()
     sources = [f"[{cid}]{v}={c.VIDEOS[v]}" for cid, v in CAMS] + [f"[{NET[0]}]Ağ kamerası={sim.url}"]
     cams = [x[0] for x in CAMS] + [NET[0]]
-    res = {"hours_planned": a.hours, "cameras": len(cams), "vid_stride": a.stride, "sources": [
+    res = {"dashboard_image": image, "git": c.git_info(),
+           "hours_planned": a.hours, "cameras": len(cams), "vid_stride": a.stride, "sources": [
         {"camera_id": cid, "video": v, "kind": "file", "reused_video": i >= 2} for i, (cid, v) in enumerate(CAMS)] + [
         {"camera_id": NET[0], "video": NET[1], "kind": "tcp_mpegts_simulator", "reused_video": True}],
         "fault_plan": {"every_min": a.fault_every, "cut_sec": a.cut_sec, "freeze_sec": a.freeze_sec},
@@ -109,24 +150,7 @@ def main(argv=None):
         fs = FaultSchedule(sim, a.fault_every, a.cut_sec, a.freeze_sec, faults)
         fs.start()
         res["measure_start_utc"] = c.utc()
-        t0, low, disk_low = time.monotonic(), 0, 0
-        while time.monotonic() - t0 < a.hours * 3600:
-            if p.poll() is not None:
-                res["detector_exit"] = p.returncode
-                break
-            vm, sw = psutil.virtual_memory(), psutil.swap_memory()
-            low = low + 1 if (vm.available < stress.MEM_GUARD_BYTES or sw.percent > 90) else 0
-            if low >= 10:
-                res["memory_guard"] = {"available_mb": round(vm.available / 2**20), "swap_percent": sw.percent}
-                break
-            free_gb = psutil.disk_usage(str(sd)).free / 2**30          # FAZ 02-A: disk doluluk koruması
-            disk_low = disk_low + 1 if free_gb < a.min_disk_gb else 0
-            if disk_low >= 10:
-                res["disk_guard"] = {"free_gb": round(free_gb, 2), "min_gb": a.min_disk_gb}
-                break
-            time.sleep(5)
-        res["measured_sec"] = round(time.monotonic() - t0, 1)
-        res["measure_end_utc"] = c.utc()
+        measure(p, a.hours, a.min_disk_gb, sd, res)
     finally:
         if fs:
             fs.stop_flag.set()
@@ -163,7 +187,8 @@ def main(argv=None):
         res["memprobe"] = collect_memprobe(sd, skip_sec=600)
     c.write_json(sd / "result.json", res)
     print(json.dumps({k: res.get(k) for k in ("started_utc", "measure_start_utc", "measure_end_utc", "measured_sec",
-                                              "delivery", "memory_guard", "disk_guard", "detector_exit")}, ensure_ascii=False))
+                                              "stop_reason", "delivery", "memory_guard", "disk_guard",
+                                              "detector_exit")}, ensure_ascii=False))
     print("çıktı:", out)
 
 

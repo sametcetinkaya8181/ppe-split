@@ -42,6 +42,33 @@ if PROJECT in PROTECTED_PROJECTS:
     raise SystemExit(f"REDDEDİLDİ: REL_PROJECT={PROJECT!r} üretim yığınıdır; güvenilirlik araçları yalnız izole "
                      "yığınlarda çalışır")
 
+# FAZ 02-B hazırlık: izole yığının dashboard imajı. REL_DASHBOARD_IMAGE verilmezse eski davranış (faz9-rel, çalışma
+# ağacından derlenebilir). Verilirse imaj SABİTTİR: yerelde var olmalı, derlenmez (compose `build:` RC etiketinin
+# üzerine çalışma ağacını yazmasın), `up` daima --no-build. Üretim etiketi (latest) hiçbir koşulda kullanılmaz.
+DEFAULT_DASHBOARD_IMAGE = "ppe-dashboard:faz9-rel"
+FORBIDDEN_DASHBOARD_IMAGES = frozenset({"ppe-dashboard", "ppe-dashboard:latest"})
+
+
+def dashboard_image() -> tuple[str, bool]:
+    """(imaj referansı, sabit mi). Ortamdan her çağrıda okunur (testler ve alt komutlar için)."""
+    ref = os.getenv("REL_DASHBOARD_IMAGE", "").strip()
+    if ref in FORBIDDEN_DASHBOARD_IMAGES:
+        raise SystemExit(f"REDDEDİLDİ: REL_DASHBOARD_IMAGE={ref!r} üretim etiketidir; izole yığın onu kullanmaz")
+    return (ref, True) if ref else (DEFAULT_DASHBOARD_IMAGE, False)
+
+
+def compose_args(args: tuple) -> list:
+    """Sabit imajda derlemeyi reddeder ve `up`'a --no-build ekler; diğer durumda argümanlar aynen döner."""
+    ref, pinned = dashboard_image()
+    args = list(args)
+    if not pinned:
+        return args
+    if "build" in args or "--build" in args:
+        raise SystemExit(f"REDDEDİLDİ: REL_DASHBOARD_IMAGE={ref} sabit; izole yığın bu imajı yeniden derlemez")
+    if args and args[0] == "up" and "--no-build" not in args:
+        args.insert(1, "--no-build")
+    return args
+
 
 def utc() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
@@ -66,6 +93,12 @@ def env() -> dict:
     """rel.env (yoksa üretilir). Değerler yalnız bu izole test yığınına aittir."""
     OUT.mkdir(parents=True, exist_ok=True)
     if not ENV_FILE.exists():
+        # FAZ 02-B: volume'lar compose PROJE adına bağlıdır, rel.env ise çalışma ağacına. Volume başka bir rel.env ile
+        # kurulmuşsa yeni rastgele parolalar onunla uyuşmaz (db-roles "password authentication failed"). Üretme, dur.
+        vol = f"{PROJECT}_rel_pgdata"
+        if subprocess.run(["docker", "volume", "inspect", vol], capture_output=True).returncode == 0:
+            raise SystemExit(f"REDDEDİLDİ: {ENV_FILE} yok ama {vol} volume'u var (başka bir rel.env ile kurulmuş; "
+                             "yeni parolalar uyuşmaz). O dosyayı REL_ENV_FILE ile verin ya da ayrı REL_PROJECT kullanın")
         vals = {"POSTGRES_DB": "ppe_rel", "POSTGRES_USER": "ppe_rel_admin",
                 "POSTGRES_PASSWORD": secrets.token_urlsafe(24), "PPE_APP_PASSWORD": secrets.token_urlsafe(24),
                 "PPE_MIGRATOR_PASSWORD": secrets.token_urlsafe(24), "INGEST_TOKEN": secrets.token_urlsafe(32),
@@ -84,14 +117,59 @@ def base_url() -> str:
     return f"http://127.0.0.1:{env()['REL_PORT']}"
 
 
-def compose(*args, check=True, capture=True, timeout=600) -> subprocess.CompletedProcess:
-    cmd = ["docker", "compose", "-p", PROJECT, "-f", str(COMPOSE), "--env-file", str(ENV_FILE), *args]
-    # Compose'da kabuk ortamı --env-file'ı EZER. Süreç ortamına yüklenmiş üretim değerleri (ör. detector modülünün
-    # okuduğu detector/.env -> INGEST_TOKEN) test yığınına sızmasın: yığın anahtarları alt süreçten çıkarılır.
+def compose_env() -> dict:
+    """docker compose alt sürecinin ortamı. Compose'da kabuk ortamı --env-file'ı EZER: süreç ortamına yüklenmiş
+    üretim değerleri (ör. detector/.env -> INGEST_TOKEN) test yığınına sızmasın diye yığın anahtarları çıkarılır ve
+    kalan ortam üretim gizli değerlerine karşı denetlenir. İmaj seçimi açıkça yazılır."""
     keys = set(env())
     sub_env = {k: v for k, v in os.environ.items() if k not in keys}
     assert_env_isolated(sub_env, context="compose")
-    return subprocess.run(cmd, check=check, capture_output=capture, text=True, timeout=timeout, env=sub_env)
+    sub_env["REL_DASHBOARD_IMAGE"] = dashboard_image()[0]
+    return sub_env
+
+
+def require_pinned_image_present() -> None:
+    ref, pinned = dashboard_image()
+    if pinned and subprocess.run(["docker", "image", "inspect", ref], capture_output=True).returncode != 0:
+        raise SystemExit(f"REDDEDİLDİ: REL_DASHBOARD_IMAGE={ref} yerelde yok (derlenmez/çekilmez; önce "
+                         "scripts/build_image.py ile oluşturun)")
+
+
+def compose(*args, check=True, capture=True, timeout=600, overrides=()) -> subprocess.CompletedProcess:
+    args = compose_args(args)
+    if args and args[0] == "up":
+        require_pinned_image_present()
+    files = [a for f in (COMPOSE, *overrides) for a in ("-f", str(f))]
+    cmd = ["docker", "compose", "-p", PROJECT, *files, "--env-file", str(ENV_FILE), *args]
+    return subprocess.run(cmd, check=check, capture_output=capture, text=True, timeout=timeout, env=compose_env())
+
+
+def git_info() -> dict:
+    r = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True)
+    d = subprocess.run(["git", "status", "--porcelain", "--", "detector", "dashboard", "tools/reliability"],
+                       cwd=ROOT, capture_output=True, text=True)
+    return {"commit": r.stdout.strip() or None, "dirty": bool(d.stdout.strip())}
+
+
+IMAGE_LABELS = {"revision": "org.opencontainers.image.revision", "version": "org.opencontainers.image.version",
+                "kind": "com.ppe.build.kind", "tree_state": "com.ppe.build.tree-state"}
+
+
+def image_provenance(service: str = "dashboard") -> dict:
+    """Çalışan izole servis container'ının imajı: istenen referans, gerçek imaj ID'si ve build etiketleri.
+    `matches_requested`: istenen referansın yereldeki ID'si çalışan container'ınkiyle aynı mı."""
+    ref, pinned = dashboard_image()
+    cid = container(service)
+    image_id = subprocess.run(["docker", "inspect", cid, "--format", "{{.Image}}"], capture_output=True,
+                              text=True).stdout.strip()
+    r = subprocess.run(["docker", "image", "inspect", image_id, "--format", "{{json .Config.Labels}}"],
+                       capture_output=True, text=True)
+    labels = json.loads(r.stdout or "null") or {}
+    want = subprocess.run(["docker", "image", "inspect", ref, "--format", "{{.Id}}"], capture_output=True,
+                          text=True).stdout.strip()
+    return {"requested": ref, "pinned": pinned, "image_id": image_id, "requested_id": want or None,
+            "matches_requested": bool(want) and want == image_id,
+            **{k: labels.get(v) for k, v in IMAGE_LABELS.items()}}
 
 
 def container(service: str) -> str:

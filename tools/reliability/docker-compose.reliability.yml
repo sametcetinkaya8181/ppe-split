@@ -1,7 +1,9 @@
 # FAZ 9 izole güvenilirlik/yük test yığını. Ana yığından (ppe-split) TAMAMEN ayrı: ayrı proje adı, ayrı PostgreSQL
 # volume'u, ayrı snapshot volume'u, ayrı port (yalnız 127.0.0.1). Arıza enjeksiyonu (DB durdurma, container restart)
 # YALNIZ bu yığına uygulanır; ana veritabanına ve outbox dosyalarına dokunulmaz.
-# Kullanım: python tools/reliability/stack.py up | down | status   (env dosyasını ve parolaları kendisi üretir)
+# Kullanım: tools/reliability/common.py üzerinden (compose/up; env dosyasını ve parolaları kendisi üretir).
+# Dashboard imajı: REL_DASHBOARD_IMAGE (ör. ppe-dashboard:0.10.7-rc.faz02a1) verilirse SABİT imaj kullanılır ve
+# derlenmez (common.compose reddeder); verilmezse eski davranış: ppe-dashboard:faz9-rel. latest kullanılmaz.
 name: ppe-rel
 
 services:
@@ -25,7 +27,7 @@ services:
     restart: "no"                       # arıza testinde durdurulan DB kendiliğinden kalkmasın
 
   db-roles:
-    image: ppe-dashboard:faz9-rel
+    image: ${REL_DASHBOARD_IMAGE:-ppe-dashboard:faz9-rel}
     command: ["python", "-m", "db.roles", "setup"]
     read_only: true
     cap_drop: ["ALL"]
@@ -40,7 +42,7 @@ services:
     restart: "no"
 
   migrate:
-    image: ppe-dashboard:faz9-rel
+    image: ${REL_DASHBOARD_IMAGE:-ppe-dashboard:faz9-rel}
     command: ["sh", "-c", "alembic upgrade head && python -m db.roles grants"]
     read_only: true
     cap_drop: ["ALL"]
@@ -56,7 +58,7 @@ services:
 
   # Tek seferlik: adlandırılmış volume root'a ait oluşur; ayrıcalıksız dashboard (uid 10001) yazabilsin.
   data-init:
-    image: ppe-dashboard:faz9-rel
+    image: ${REL_DASHBOARD_IMAGE:-ppe-dashboard:faz9-rel}
     user: "0:0"
     command: ["sh", "-c", "mkdir -p /data/snapshots && chown -R 10001:10001 /data"]
     cap_drop: ["ALL"]
@@ -68,7 +70,7 @@ services:
 
   dashboard:
     build: ../../dashboard
-    image: ppe-dashboard:faz9-rel
+    image: ${REL_DASHBOARD_IMAGE:-ppe-dashboard:faz9-rel}
     ports:
       - "127.0.0.1:${REL_PORT:-8100}:8000"
     volumes:
